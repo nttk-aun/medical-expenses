@@ -1,12 +1,60 @@
 /**
  * แสดงวันที่แบบใบเสร็จ: DD/MM/YYYY ปี พ.ศ.
  * ลง DB / API ยังใช้ ค.ศ. รูปแบบ YYYY-MM-DD
- * รองรับคำย่อเดือน เช่น "10 พ.ค. 2569" และปี พ.ศ. สองหลัก เช่น "69" → 2569
+ * แยกเคสปี: 4 หลัก พ.ศ. (เช่น 2569) กับ 2 หลัก พ.ศ. (เช่น 69 → 2500+69) ไม่ใช้ logic ร่วมกัน
+ * Regex จับปีต้องเป็น (\d{4}|\d{2}) เสมอ — ถ้าเป็น (\d{2}|\d{4}) จะจับ "25" จาก "2569" ก่อนแล้วไปเคสปี 2 หลักผิดๆ
  */
 
 /**
- * ปีบนใบรักษาเป็น พ.ศ. — ถ้าเขียน 2 หลัก (เช่น 69) ให้ถือว่าเป็น 25xx (2569)
- * ถ้า 4 หลักอยู่ในช่วง 2300–2900 ใช้ตามนั้น
+ * เคสหลัก: ปี พ.ศ. เต็ม 4 หลักบนใบ (เช่น 2569) — ไม่ผ่าน logic ปี 2 หลัก
+ */
+export function parseThaiBeYearFourDigits(raw: string): number | null {
+  try {
+    const s = raw.replace(/,/g, "").trim();
+    if (!/^\d{4}$/.test(s)) {
+      return null;
+    }
+    const n = Number.parseInt(s, 10);
+    if (!Number.isFinite(n)) {
+      return null;
+    }
+    if (n >= 2300 && n <= 2900) {
+      return n;
+    }
+    return null;
+  } catch (err) {
+    console.error("[parseThaiBeYearFourDigits]", err);
+    return null;
+  }
+}
+
+/**
+ * เคสรอง: ปี พ.ศ. เขียน 2 หลัก (เช่น 69) → 2500 + 69 = 2569
+ */
+export function parseThaiBeYearTwoDigits(raw: string): number | null {
+  try {
+    const s = raw.replace(/,/g, "").trim();
+    if (!/^\d{2}$/.test(s)) {
+      return null;
+    }
+    const n = Number.parseInt(s, 10);
+    if (!Number.isFinite(n)) {
+      return null;
+    }
+    const full = 2500 + n;
+    if (full >= 2488 && full <= 2605) {
+      return full;
+    }
+    return null;
+  } catch (err) {
+    console.error("[parseThaiBeYearTwoDigits]", err);
+    return null;
+  }
+}
+
+/**
+ * แยกเคสตามความยาว token เท่านั้น — 2 หลักกับ 4 หลักไม่ทับ logic กัน
+ * (ใช้กับช่อง DD/MM/ปี และ token ปีจากข้อความไทย)
  */
 export function expandThaiBuddhistEraYearFromToken(raw: string): number | null {
   try {
@@ -14,22 +62,11 @@ export function expandThaiBuddhistEraYearFromToken(raw: string): number | null {
     if (!/^\d+$/.test(s)) {
       return null;
     }
-    const n = Number.parseInt(s, 10);
-    if (!Number.isFinite(n)) {
-      return null;
+    if (s.length === 4) {
+      return parseThaiBeYearFourDigits(s);
     }
     if (s.length === 2) {
-      const full = 2500 + n;
-      if (full >= 2488 && full <= 2605) {
-        return full;
-      }
-      return null;
-    }
-    if (s.length === 4) {
-      if (n >= 2300 && n <= 2900) {
-        return n;
-      }
-      return null;
+      return parseThaiBeYearTwoDigits(s);
     }
     return null;
   } catch (err) {
@@ -113,45 +150,105 @@ function thaiMonthTokenToNumberReceipt(token: string): number | null {
   }
 }
 
-/** รูปแบบ "10 พ.ค. 2569" / "10 พค 2569" / "10-พ.ค.-2569" → DD/MM/YYYY พ.ศ. */
+/** รูปแบบ "10 พ.ค. 2569" / "10พค2569" / "10-พ.ค.-2569" / "10พ.ค.2569" / ข้อความยาวที่มีวันที่แทรก → DD/MM/YYYY พ.ศ. */
 function thaiWrittenDayMonthBeToDdMmYyyyBe(text: string): string | null {
   try {
     const t = text.replace(/\s+/g, " ").trim();
     if (!t) {
       return null;
     }
-    const re =
-      /^(\d{1,2})[\s/\-]+([\u0E00-\u0E7F][\u0E00-\u0E7F\.\s]{0,30}?)[\s/\-]+(\d{2}|\d{4})$/u;
-    const m = re.exec(t);
+    const anchoredRe =
+      /^(\d{1,2})(?:[\s/\-]+|(?=[\u0E00-\u0E7F]))([\u0E00-\u0E7F][\u0E00-\u0E7F\.\s]{0,30}?)[\s/\-]*(\d{4}|\d{2})$/u;
+    const tryFromGroups = (m: RegExpExecArray): string | null => {
+      try {
+        const d = Number.parseInt(m[1], 10);
+        const monthNum = thaiMonthTokenToNumberReceipt(m[2].trim());
+        const yearTok = m[3].replace(/,/g, "").trim();
+        let yBe: number | null = null;
+        if (/^\d{4}$/.test(yearTok)) {
+          yBe = parseThaiBeYearFourDigits(yearTok);
+        } else if (/^\d{2}$/.test(yearTok)) {
+          yBe = parseThaiBeYearTwoDigits(yearTok);
+        }
+        if (monthNum == null || !Number.isFinite(d) || yBe == null) {
+          return null;
+        }
+        if (monthNum < 1 || monthNum > 12 || d < 1 || d > 31) {
+          return null;
+        }
+        if (yBe < 2300 || yBe > 2900) {
+          return null;
+        }
+        const yCe = yBe - 543;
+        const check = new Date(Date.UTC(yCe, monthNum - 1, d));
+        if (
+          check.getUTCFullYear() !== yCe ||
+          check.getUTCMonth() !== monthNum - 1 ||
+          check.getUTCDate() !== d
+        ) {
+          return null;
+        }
+        const dd = String(d).padStart(2, "0");
+        const mm = String(monthNum).padStart(2, "0");
+        return `${dd}/${mm}/${yBe}`;
+      } catch (err) {
+        console.error("[thaiWrittenDayMonthBeToDdMmYyyyBe.tryFromGroups]", err);
+        return null;
+      }
+    };
+
+    const full = anchoredRe.exec(t);
+    if (full) {
+      return tryFromGroups(full);
+    }
+
+    const scanRe =
+      /(\d{1,2})(?:[\s/\-]+|(?=[\u0E00-\u0E7F]))([\u0E00-\u0E7F][\u0E00-\u0E7F\.\s]{0,30}?)[\s/\-]*(\d{4}|\d{2})/gu;
+    let m: RegExpExecArray | null;
+    while ((m = scanRe.exec(t)) !== null) {
+      const built = tryFromGroups(m);
+      if (built) {
+        return built;
+      }
+    }
+    return null;
+  } catch (err) {
+    console.error("[thaiWrittenDayMonthBeToDdMmYyyyBe]", err);
+    return null;
+  }
+}
+
+/** รหัส C+YYYYMMDD (Krungthai เช่น C20260510613018277458) → YYYY-MM-DD ค.ศ. — ใช้ตัวแรกในข้อความ */
+function tryKrungthaiReferenceCToCeIso(text: string): string | null {
+  try {
+    const re = /\bC(20[2-9]\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d*\b/gi;
+    const m = re.exec(text);
     if (!m) {
       return null;
     }
-    const d = Number.parseInt(m[1], 10);
-    const monthNum = thaiMonthTokenToNumberReceipt(m[2].trim());
-    const yBe = expandThaiBuddhistEraYearFromToken(m[3].replace(/,/g, ""));
-    if (monthNum == null || !Number.isFinite(d) || yBe == null) {
+    const yCe = Number.parseInt(m[1], 10);
+    const mo = Number.parseInt(m[2], 10);
+    const d = Number.parseInt(m[3], 10);
+    if (![yCe, mo, d].every((n) => Number.isFinite(n))) {
       return null;
     }
-    if (monthNum < 1 || monthNum > 12 || d < 1 || d > 31) {
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) {
       return null;
     }
-    if (yBe < 2300 || yBe > 2900) {
-      return null;
-    }
-    const yCe = yBe - 543;
-    const check = new Date(Date.UTC(yCe, monthNum - 1, d));
+    const check = new Date(Date.UTC(yCe, mo - 1, d));
     if (
       check.getUTCFullYear() !== yCe ||
-      check.getUTCMonth() !== monthNum - 1 ||
+      check.getUTCMonth() !== mo - 1 ||
       check.getUTCDate() !== d
     ) {
       return null;
     }
+    const yyyy = String(yCe).padStart(4, "0");
+    const mm = String(mo).padStart(2, "0");
     const dd = String(d).padStart(2, "0");
-    const mm = String(monthNum).padStart(2, "0");
-    return `${dd}/${mm}/${yBe}`;
+    return `${yyyy}-${mm}-${dd}`;
   } catch (err) {
-    console.error("[thaiWrittenDayMonthBeToDdMmYyyyBe]", err);
+    console.error("[tryKrungthaiReferenceCToCeIso]", err);
     return null;
   }
 }
@@ -163,11 +260,19 @@ export function parseReceiptDateFieldToThaiBeDisplay(raw: string): string | null
     if (!t) {
       return null;
     }
+    const refIso = tryKrungthaiReferenceCToCeIso(t);
+    if (refIso) {
+      return ceIsoDateStringToThaiBeDdMmYyyy(refIso);
+    }
+    const thaiWritten = thaiWrittenDayMonthBeToDdMmYyyyBe(t);
+    if (thaiWritten) {
+      return thaiWritten;
+    }
     const viaSlash = thaiBeDdMmYyyyToCeIsoDateString(t);
     if (viaSlash) {
       return ceIsoDateStringToThaiBeDdMmYyyy(viaSlash);
     }
-    return thaiWrittenDayMonthBeToDdMmYyyyBe(t);
+    return null;
   } catch (err) {
     console.error("[parseReceiptDateFieldToThaiBeDisplay]", err);
     return null;
@@ -181,15 +286,15 @@ export function parseReceiptDateFieldToCeIso(raw: string): string | null {
     if (!t) {
       return null;
     }
-    const direct = thaiBeDdMmYyyyToCeIsoDateString(t);
-    if (direct) {
-      return direct;
+    const refIso = tryKrungthaiReferenceCToCeIso(t);
+    if (refIso) {
+      return refIso;
     }
-    const ddMmBe = thaiWrittenDayMonthBeToDdMmYyyyBe(t);
-    if (!ddMmBe) {
-      return null;
+    const ddMmBeFromThai = thaiWrittenDayMonthBeToDdMmYyyyBe(t);
+    if (ddMmBeFromThai) {
+      return thaiBeDdMmYyyyToCeIsoDateString(ddMmBeFromThai);
     }
-    return thaiBeDdMmYyyyToCeIsoDateString(ddMmBe);
+    return thaiBeDdMmYyyyToCeIsoDateString(t);
   } catch (err) {
     console.error("[parseReceiptDateFieldToCeIso]", err);
     return null;

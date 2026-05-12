@@ -102,9 +102,7 @@ export function UploadForm() {
         preview.serviceDateThaiBe,
       );
       if (!serviceDateIso) {
-        setMessage(
-          "วันที่ไม่ถูกต้อง — ใช้ วัน/เดือน/ปี พ.ศ. เช่น 20/05/2563 หรือแบบใบเสร็จ เช่น 10 พ.ค. 2569 (ลงระบบเป็นปี ค.ศ. อัตโนมัติ)",
-        );
+        setMessage("วันที่ไม่ถูกต้อง — ตัวอย่าง 10/05/2569 หรือ 10 พ.ค. 2569");
         setBusy(false);
         return;
       }
@@ -173,14 +171,13 @@ export function UploadForm() {
               ตรวจสอบก่อนบันทึก
             </h2>
             <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              {preview.originalFilename} — แก้ไขวันที่และยอดให้ตรงใบเสร็จ แล้วกดยืนยัน
-              (ตัวเลขจาก OCR อาจผิดได้)
+              {preview.originalFilename} — ตรวจวันที่กับยอดให้ตรงใบ แล้วกดยืนยัน
             </p>
           </div>
 
           {!preview.ocrSucceeded && preview.ocrError ? (
             <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
-              OCR มีปัญหา: {preview.ocrError} — กรอกข้อมูลด้วยมือได้
+              OCR ไม่สำเร็จ: {preview.ocrError} — กรอกมือได้
             </p>
           ) : null}
 
@@ -223,12 +220,11 @@ export function UploadForm() {
               }}
               className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50"
               disabled={busy}
-              placeholder="20/05/2563, 12/05/69 หรือ 12 พ.ค. 69"
+              placeholder="10/05/2569 หรือ 10 พ.ค. 2569"
               autoComplete="off"
             />
             <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
-              รองรับ DD/MM/YYYY (พ.ศ.) ปี 2 หลักเช่น 69 → 2569, หรือคำย่อเดือน (พ.ค.) — คลิกนอกช่องเพื่อจัดรูปแบบ
-              — บันทึกเป็นปี ค.ศ. ในระบบอัตโนมัติ
+              คลิกนอกช่องเพื่อจัดรูปแบบ
             </span>
           </label>
 
@@ -246,8 +242,7 @@ export function UploadForm() {
               placeholder="1234.50"
             />
             <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
-              ภาพจะถูกขยาย/เทา/คมเล็กน้อยก่อน OCR — ยอดจับจากมุมล่างขวาและคำว่า รวมทั้งสิ้น / ยอดชำระ ฯลฯ
-              — ถ้าไม่ตรงยอดจริงให้แก้มือ (ใบมักมีเลขที่ใบเสร็จหลายชุด)
+              ยอดเงินจากการสแกน — ถ้าไม่ตรงใบให้แก้มือ
             </span>
           </label>
 

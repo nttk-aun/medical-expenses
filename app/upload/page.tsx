@@ -16,8 +16,7 @@ export default function UploadPage() {
             อัปโหลดใบเสร็จ
           </h1>
           <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            ระบบจะอ่านข้อความด้วย Tesseract (tha+eng) แล้วให้คุณตรวจสอบวันที่กับยอดเงินก่อนกดยืนยัน
-            — จึงจะบันทึกลง PostgreSQL
+            อัปโหลดรูป ตรวจวันที่กับยอด แล้วกดยืนยันเพื่อบันทึก
           </p>
         </div>
         <UploadForm />

@@ -1,5 +1,8 @@
 import type { OcrLineBox } from "@/lib/ocr";
-import { expandThaiBuddhistEraYearFromToken } from "@/lib/date-thai-display";
+import {
+  parseThaiBeYearFourDigits,
+  parseThaiBeYearTwoDigits,
+} from "@/lib/date-thai-display";
 
 export type ParsedExpense = {
   serviceDate: Date | null;
@@ -100,16 +103,24 @@ function thaiMonthFragmentToNumber(fragment: string): number | null {
 function parseYearToken(raw: string): number | null {
   try {
     const s = raw.replace(/,/g, "").trim();
-    const be = expandThaiBuddhistEraYearFromToken(s);
-    if (be != null) {
-      return be;
-    }
-    const n = Number.parseInt(s, 10);
-    if (!Number.isFinite(n)) {
+    if (!/^\d+$/.test(s)) {
       return null;
     }
-    if (s.length === 4 && n >= 1900 && n <= 2100) {
-      return n;
+    /** เคสปี 4 หลัก: พ.ศ. 2300–2900 ก่อน ถ้าไม่ใช่ค่อยถือว่าเป็น ค.ศ. 1900–2100 (เช่น 2026 ในรหัส) */
+    if (s.length === 4) {
+      const be = parseThaiBeYearFourDigits(s);
+      if (be != null) {
+        return be;
+      }
+      const n = Number.parseInt(s, 10);
+      if (Number.isFinite(n) && n >= 1900 && n <= 2100) {
+        return n;
+      }
+      return null;
+    }
+    /** เคสปี 2 หลัก: พ.ศ. ย่อ — 69 → 2569 เท่านั้น ไม่ทับกับเคส 4 หลัก */
+    if (s.length === 2) {
+      return parseThaiBeYearTwoDigits(s);
     }
     return null;
   } catch (err) {
@@ -140,12 +151,12 @@ function parseDateFromMatch(
   }
 }
 
-/** รูปแบบ "20 พฤษภาคม 2563" / "12 พ.ค. 69" (ปี พ.ศ. สองหลัก → 2569) */
+/** รูปแบบ "20 พฤษภาคม 2563" / "12 พ.ค. 69" / "10พ.ค.2569" — ปีใน regex ต้องเป็น \\d{4}|\\d{2} กันไม่จับ "25" จาก "2569" */
 function extractThaiWrittenDates(text: string): Array<{ date: Date; source: string; index: number }> {
   const out: Array<{ date: Date; source: string; index: number }> = [];
   try {
     const re =
-      /(\d{1,2})\s+([\u0E00-\u0E7F\u0020\.]{2,32}?)\s+(\d{2}|\d{4})/gu;
+      /(\d{1,2})(?:\s+|(?=[\u0E00-\u0E7F]))([\u0E00-\u0E7F\u0020\.]{2,32}?)\s*(\d{4}|\d{2})/gu;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
       const day = Number.parseInt(m[1], 10);
@@ -170,19 +181,48 @@ function extractThaiWrittenDates(text: string): Array<{ date: Date; source: stri
   }
 }
 
+type DateCandidate = { date: Date; source: string; index: number };
+
+/** รหัสอ้างอิง Krungthai มักเป็น C + YYYYMMDD + เลขต่อ เช่น C20260510613018277458 = 2026-05-10 (ค.ศ.) */
+function extractDatesFromKrungthaiReferenceC(text: string): DateCandidate[] {
+  const out: DateCandidate[] = [];
+  try {
+    const re = /\bC(20[2-9]\d)(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d*\b/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const yCe = Number.parseInt(m[1], 10);
+      const mo = Number.parseInt(m[2], 10);
+      const d = Number.parseInt(m[3], 10);
+      const parsed = parseDateFromMatch(d, mo, yCe, "ref_c_yyyymmdd_ce");
+      if (parsed) {
+        out.push({ ...parsed, index: m.index ?? 0 });
+      }
+    }
+    return out;
+  } catch (err) {
+    console.error("[extractDatesFromKrungthaiReferenceC]", err);
+    return out;
+  }
+}
+
 function extractBestDate(text: string): { date: Date; source: string } | null {
   try {
     const patterns: Array<{ re: RegExp; source: string }> = [
-      { re: /(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})/g, source: "dmy_numeric" },
+      { re: /(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})/g, source: "dmy_numeric" },
       { re: /(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})/g, source: "ymd_numeric" },
     ];
 
-    const candidates: Array<{ date: Date; source: string }> = [];
+    const candidates: DateCandidate[] = [];
+
+    for (const hit of extractDatesFromKrungthaiReferenceC(text)) {
+      candidates.push(hit);
+    }
 
     for (const hit of extractThaiWrittenDates(text)) {
       candidates.push({
         date: hit.date,
         source: hit.source,
+        index: hit.index,
       });
     }
 
@@ -190,13 +230,14 @@ function extractBestDate(text: string): { date: Date; source: string } | null {
       let m: RegExpExecArray | null;
       const r = new RegExp(re.source, re.flags);
       while ((m = r.exec(text)) !== null) {
+        const idx = m.index ?? 0;
         if (source === "ymd_numeric") {
           const y = Number(m[1]);
           const mo = Number(m[2]);
           const d = Number(m[3]);
           const parsed = parseDateFromMatch(d, mo, y, source);
           if (parsed) {
-            candidates.push({ ...parsed });
+            candidates.push({ ...parsed, index: idx });
           }
         } else {
           const d = Number(m[1]);
@@ -207,7 +248,7 @@ function extractBestDate(text: string): { date: Date; source: string } | null {
           }
           const parsed = parseDateFromMatch(d, mo, yParsed, source);
           if (parsed) {
-            candidates.push({ ...parsed });
+            candidates.push({ ...parsed, index: idx });
           }
         }
       }
@@ -218,6 +259,9 @@ function extractBestDate(text: string): { date: Date; source: string } | null {
     }
     const sourceRank = (s: string): number => {
       try {
+        if (s === "ref_c_yyyymmdd_ce") {
+          return 4;
+        }
         if (s === "d_thai_month_y") {
           return 2;
         }
@@ -231,11 +275,15 @@ function extractBestDate(text: string): { date: Date; source: string } | null {
       }
     };
     candidates.sort((a, b) => {
-      const byTime = b.date.getTime() - a.date.getTime();
-      if (byTime !== 0) {
-        return byTime;
+      const rb = sourceRank(b.source);
+      const ra = sourceRank(a.source);
+      if (rb !== ra) {
+        return rb - ra;
       }
-      return sourceRank(b.source) - sourceRank(a.source);
+      if (a.index !== b.index) {
+        return a.index - b.index;
+      }
+      return b.date.getTime() - a.date.getTime();
     });
     const best = candidates[0];
     return { date: best.date, source: best.source };
@@ -247,8 +295,24 @@ function extractBestDate(text: string): { date: Date; source: string } | null {
 
 function parseMoneyToken(raw: string): number | null {
   try {
-    const cleaned = raw.replace(/,/g, "").replace(/\s+/g, "");
-    const n = Number.parseFloat(cleaned);
+    const cleaned = raw
+      .replace(/\s+/g, "")
+      .replace(/\u00a0/g, "")
+      .replace(/,/g, ".")
+      .replace(/．/g, ".");
+    // OCR อ่าน comma คั่นหลักพันเป็นจุด: "1.000.00" — ต้องแยกจาก "1.00" ธรรมดา
+    if (/^\d{1,3}(\.\d{3})+\.\d{1,2}$/.test(cleaned)) {
+      const lastDot = cleaned.lastIndexOf(".");
+      const intPart = cleaned.slice(0, lastDot).replace(/\./g, "");
+      const decPart = cleaned.slice(lastDot + 1);
+      const n = Number.parseFloat(`${intPart}.${decPart}`);
+      if (!Number.isFinite(n) || n <= 0) {
+        return null;
+      }
+      return n;
+    }
+    const noComma = raw.replace(/,/g, "").replace(/\s+/g, "").replace(/\u00a0/g, "");
+    const n = Number.parseFloat(noComma);
     if (!Number.isFinite(n) || n <= 0) {
       return null;
     }
@@ -278,7 +342,7 @@ function isLikelyReceiptReferenceToken(rawToken: string, amount: number): boolea
 
 function lineHasStrongTotalKeyword(line: string): boolean {
   try {
-    return /รวมทั้งสิ้น|ยอดชำระ(?:เงิน)?|Grand\s*Total|ยอด(?:เงิน)?รวม|จำนวนเงิน(?:ทั้งสิ้น)?|Net\s*Amount|TOTAL\s*THB|ชำระ(?:แล้ว)?|สุทธิ|ยอดสุทธิ|Amount\s*Due|Balance\s*Due|ค่ารักษาพยาบาล|ค่ารักษา|ค่ายา|ค่าบริการ|ยอดที่ต้องชำระ/i.test(
+    return /รวมทั้งสิ้น|ยอดชำระ(?:เงิน)?|Grand\s*Total|ยอด(?:เงิน)?รวม|จำนวนเงิน(?:ทั้งสิ้น)?|จำนวน\s*:|Net\s*Amount|TOTAL\s*THB|ชำระ(?:แล้ว)?|สุทธิ|ยอดสุทธิ|Amount\s*Due|Balance\s*Due|ค่ารักษาพยาบาล|ค่ารักษา|ค่ายา|ค่าบริการ|ยอดที่ต้องชำระ/i.test(
       line,
     );
   } catch (err) {
@@ -289,18 +353,19 @@ function lineHasStrongTotalKeyword(line: string): boolean {
 
 function lineHasWeakMoneyKeyword(line: string): boolean {
   try {
-    return /รวม|total|net|ยอด|ชำระ|balance|บาท|THB|฿/i.test(line);
+    return /รวม|total|net|ยอด|ชำระ|balance|บาท|THB|฿|จำนวน/i.test(line);
   } catch (err) {
     console.error("[lineHasWeakMoneyKeyword]", err);
     return false;
   }
 }
 
-/** ดึงช่วงตัวเลขเงิน — จับยาวสุดก่อน กันปัญหา 2500 → 250 และ 1,000.00 → 1 */
+/** ดึงช่วงตัวเลขเงิน — จับยาวสุดก่อน กันปัญหา 2500 → 250 และจุดคั่นหลักพัน (OCR อ่าน comma เป็น .) เช่น 1.000.00 ไม่ให้หลุดเป็น 1.00 */
 function findMoneySpansInString(text: string): Array<{ raw: string; start: number; end: number }> {
   try {
     type Span = { start: number; end: number; raw: string; len: number };
     const patterns: RegExp[] = [
+      /\d{1,3}(?:\.\d{3})+\.\d{1,2}/g,
       /\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?/g,
       /(?<![\d,])\d{4,11}(?:\.\d{1,2})?(?![\d])/g,
       /(?<![\d,.])\d{1,3}\.\d{1,2}(?!\.\d)/g,
