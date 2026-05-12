@@ -11,6 +11,27 @@ export const maxDuration = 120;
 const MAX_BYTES = 15 * 1024 * 1024;
 const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp"]);
 
+function uploadErrorMessageForClient(err: unknown): string {
+  try {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/P1001|Can't reach database server/i.test(msg)) {
+      return "เชื่อมต่อฐานข้อมูลไม่ได้ — ตรวจสอบ DATABASE_URL บน Vercel (Neon: ใช้ connection string แบบ pooled / `-pooler` ตามที่ผู้ให้บริการแนะนำ)";
+    }
+    if (/P1000|Authentication failed|password authentication failed/i.test(msg)) {
+      return "ฐานข้อมูลปฏิเสธการเข้าสู่ระบบ — ตรวจสอบรหัสผ่านและผู้ใช้ใน DATABASE_URL";
+    }
+    if (/ENOENT|EPERM|EACCES|EROFS|read-only file system/i.test(msg)) {
+      return "บันทึกไฟล์ไม่สำเร็จ — บน Vercel ต้องตั้งค่า BLOB_READ_WRITE_TOKEN (พื้นที่เขียนดิสก์ของฟังก์ชันแทบใช้ไม่ได้)";
+    }
+    if (/BLOB_READ_WRITE_TOKEN|@vercel\/blob|Vercel Blob/i.test(msg)) {
+      return "ที่เก็บไฟล์ (Blob) ไม่สำเร็จ — ตรวจสอบ BLOB_READ_WRITE_TOKEN และสิทธิ์ของ Blob store";
+    }
+  } catch (inner) {
+    console.error("[uploadErrorMessageForClient]", inner);
+  }
+  return "อัปโหลดหรือประมวลผลไม่สำเร็จ";
+}
+
 function extensionForMime(mime: string): string {
   try {
     if (mime === "image/jpeg") {
@@ -35,6 +56,23 @@ export async function POST(request: Request) {
   const blobToken = process.env.BLOB_READ_WRITE_TOKEN?.trim();
 
   try {
+    if (process.env.VERCEL && !blobToken) {
+      return NextResponse.json(
+        {
+          error:
+            "บน Vercel ต้องตั้งค่า BLOB_READ_WRITE_TOKEN ใน Environment Variables — เซิร์ฟเวอร์เขียนโฟลเดอร์ uploads ถาวรไม่ได้",
+        },
+        { status: 503 },
+      );
+    }
+
+    if (!process.env.DATABASE_URL?.trim()) {
+      return NextResponse.json(
+        { error: "ไม่พบ DATABASE_URL ใน Environment Variables ของ Vercel" },
+        { status: 500 },
+      );
+    }
+
     const form = await request.formData();
     const file = form.get("file");
 
@@ -107,7 +145,7 @@ export async function POST(request: Request) {
     }
     console.error("[POST /api/documents/upload]", err);
     return NextResponse.json(
-      { error: "อัปโหลดหรือประมวลผลไม่สำเร็จ" },
+      { error: uploadErrorMessageForClient(err) },
       { status: 500 },
     );
   } finally {

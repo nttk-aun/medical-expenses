@@ -4,14 +4,15 @@ const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefi
 
 export function getPrisma(): PrismaClient {
   try {
-    if (globalForPrisma.prisma) {
-      return globalForPrisma.prisma;
+    if (!globalForPrisma.prisma) {
+      globalForPrisma.prisma = new PrismaClient({
+        log:
+          process.env.NODE_ENV === "development"
+            ? ["error", "warn"]
+            : ["error"],
+      });
     }
-    const client = new PrismaClient();
-    if (process.env.NODE_ENV !== "production") {
-      globalForPrisma.prisma = client;
-    }
-    return client;
+    return globalForPrisma.prisma;
   } catch (err) {
     console.error("[getPrisma]", err);
     if (
