@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import {
   ceIsoDateStringToThaiBeDdMmYyyy,
@@ -24,14 +24,74 @@ type PreviewState = {
 export function UploadForm() {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
+  const pollAbortRef = useRef<AbortController | null>(null);
 
   const resetPreview = useCallback(() => {
     try {
+      pollAbortRef.current?.abort();
+      pollAbortRef.current = null;
       setPreview(null);
+      setOcrLoading(false);
     } catch (err) {
       console.error("[UploadForm.resetPreview]", err);
+    }
+  }, []);
+
+  const pollStagingOcr = useCallback(async (stagingId: string, signal: AbortSignal) => {
+    try {
+      const maxAttempts = 120;
+      for (let i = 0; i < maxAttempts; i++) {
+        if (signal.aborted) {
+          return;
+        }
+        const res = await fetch(`/api/receipts/staging/${stagingId}/status`, {
+          signal,
+        });
+        if (!res.ok) {
+          await new Promise((r) => setTimeout(r, 1000));
+          continue;
+        }
+        const s = (await res.json()) as {
+          ocrPending?: boolean;
+          ocrSucceeded?: boolean;
+          ocrError?: string | null;
+          suggestedServiceDate?: string | null;
+          suggestedAmountThb?: string | null;
+        };
+        if (!s.ocrPending) {
+          setPreview((prev) =>
+            prev && prev.stagingId === stagingId
+              ? {
+                  ...prev,
+                  ocrSucceeded: s.ocrSucceeded !== false,
+                  ocrError: s.ocrError ?? null,
+                  serviceDateThaiBe: ceIsoDateStringToThaiBeDdMmYyyy(
+                    s.suggestedServiceDate ?? "",
+                  ),
+                  amountThb: s.suggestedAmountThb ?? "",
+                }
+              : prev,
+          );
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      if (!signal.aborted) {
+        setMessage(
+          "การอ่านข้อความจากรูปใช้เวลานาน — กรอกวันที่และยอดเองในช่องด้านล่างได้",
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
+      console.error("[UploadForm.pollStagingOcr]", err);
+      if (!signal.aborted) {
+        setMessage("ไม่สามารถโหลดผลการอ่านข้อความอัตโนมัติ — กรอกข้อมูลเองได้");
+      }
     }
   }, []);
 
@@ -60,6 +120,7 @@ export function UploadForm() {
         ocrError?: string | null;
         suggestedServiceDate?: string | null;
         suggestedAmountThb?: string | null;
+        ocrPending?: boolean;
         error?: string;
       };
       if (!res.ok) {
@@ -71,17 +132,41 @@ export function UploadForm() {
         return;
       }
 
-      setPreview({
-        stagingId: data.stagingId,
-        originalFilename: data.originalFilename ?? file.name,
-        ocrSucceeded: data.ocrSucceeded !== false,
-        ocrError: data.ocrError ?? null,
-        serviceDateThaiBe: ceIsoDateStringToThaiBeDdMmYyyy(
-          data.suggestedServiceDate ?? "",
-        ),
-        amountThb: data.suggestedAmountThb ?? "",
-        notes: "",
-      });
+      pollAbortRef.current?.abort();
+      pollAbortRef.current = new AbortController();
+      const ac = pollAbortRef.current;
+
+      if (data.ocrPending) {
+        setOcrLoading(true);
+        setPreview({
+          stagingId: data.stagingId,
+          originalFilename: data.originalFilename ?? file.name,
+          ocrSucceeded: false,
+          ocrError: null,
+          serviceDateThaiBe: "",
+          amountThb: "",
+          notes: "",
+        });
+        void pollStagingOcr(data.stagingId, ac.signal).finally(() => {
+          try {
+            setOcrLoading(false);
+          } catch (e) {
+            console.error("[UploadForm] poll finally", e);
+          }
+        });
+      } else {
+        setPreview({
+          stagingId: data.stagingId,
+          originalFilename: data.originalFilename ?? file.name,
+          ocrSucceeded: data.ocrSucceeded !== false,
+          ocrError: data.ocrError ?? null,
+          serviceDateThaiBe: ceIsoDateStringToThaiBeDdMmYyyy(
+            data.suggestedServiceDate ?? "",
+          ),
+          amountThb: data.suggestedAmountThb ?? "",
+          notes: "",
+        });
+      }
       form.reset();
     } catch (err) {
       console.error("[UploadForm.onSubmitUpload]", err);
@@ -178,6 +263,12 @@ export function UploadForm() {
           {!preview.ocrSucceeded && preview.ocrError ? (
             <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
               OCR ไม่สำเร็จ: {preview.ocrError} — กรอกมือได้
+            </p>
+          ) : null}
+
+          {ocrLoading ? (
+            <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-950 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-100">
+              กำลังอ่านข้อความจากรูป (อาจใช้เวลา 10–90 วินาที)… รอผลได้หรือกรอกวันที่กับยอดเองได้
             </p>
           ) : null}
 

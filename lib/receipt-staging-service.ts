@@ -11,6 +11,16 @@ export type StagingUploadResult = {
   ocrError: string | null;
   suggestedServiceDate: string | null;
   suggestedAmountThb: string | null;
+  /** True when OCR runs in the background (Vercel); client should poll `/api/receipts/staging/[id]/status`. */
+  ocrPending?: boolean;
+};
+
+export type StagingOcrStatusPayload = {
+  ocrPending: boolean;
+  ocrSucceeded: boolean;
+  ocrError: string | null;
+  suggestedServiceDate: string | null;
+  suggestedAmountThb: string | null;
 };
 
 export async function createReceiptStagingWithOcr(args: {
@@ -85,6 +95,137 @@ export async function createReceiptStagingWithOcr(args: {
     };
   } catch (err) {
     console.error("[createReceiptStagingWithOcr]", err);
+    throw err;
+  }
+}
+
+/** Fast insert before OCR — used on Vercel with `after()` so the HTTP response can finish quickly. */
+export async function createReceiptStagingPlaceholder(args: {
+  stagingId: string;
+  originalFilename: string;
+  storedPath: string;
+  mimeType: string;
+  fileSizeBytes: number;
+}): Promise<void> {
+  try {
+    const prisma = getPrisma();
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+    await prisma.receiptStaging.create({
+      data: {
+        id: args.stagingId,
+        originalFilename: args.originalFilename,
+        storedPath: args.storedPath,
+        mimeType: args.mimeType,
+        fileSizeBytes: args.fileSizeBytes,
+        status: "PENDING",
+        ocrText: null,
+        ocrError: null,
+        parseSnapshot: { ocrPending: true },
+        expiresAt,
+      },
+    });
+  } catch (err) {
+    console.error("[createReceiptStagingPlaceholder]", err);
+    throw err;
+  }
+}
+
+/** Run OCR and merge into an existing placeholder row (must still be PENDING with `ocrPending` in snapshot). */
+export async function runOcrAndPatchStaging(args: {
+  stagingId: string;
+  absoluteFilePath: string;
+}): Promise<void> {
+  try {
+    const prisma = getPrisma();
+    const row = await prisma.receiptStaging.findUnique({
+      where: { id: args.stagingId },
+    });
+    if (!row || row.status !== "PENDING") {
+      return;
+    }
+    const snap = row.parseSnapshot as { ocrPending?: boolean } | null;
+    if (snap?.ocrPending !== true) {
+      return;
+    }
+
+    let ocrText: string | null = null;
+    let ocrError: string | null = null;
+    let parsed: ParsedExpense | null = null;
+
+    try {
+      const { runOcrOnImagePath } = await import("@/lib/ocr");
+      const { parseExpenseFromOcrText } = await import("@/lib/parse-expense");
+      const { text, lines } = await runOcrOnImagePath(args.absoluteFilePath);
+      ocrText = text;
+      parsed = parseExpenseFromOcrText(text, lines);
+    } catch (inner) {
+      console.error("[runOcrAndPatchStaging] ocr", inner);
+      ocrError =
+        inner instanceof Error ? inner.message.slice(0, 4000) : String(inner).slice(0, 4000);
+    }
+
+    const parseSnapshot: Prisma.InputJsonValue = {
+      suggestedServiceDate: parsed?.serviceDate?.toISOString().slice(0, 10) ?? null,
+      suggestedAmountThb: parsed?.amountThb ?? null,
+      dateSource: parsed?.dateSource ?? null,
+      amountSource: parsed?.amountSource ?? null,
+      ocrPreview: ocrText ? ocrText.slice(0, 800) : null,
+    };
+
+    await prisma.receiptStaging.update({
+      where: { id: args.stagingId },
+      data: {
+        ocrText,
+        ocrError,
+        suggestedServiceDate: parsed?.serviceDate ?? undefined,
+        suggestedAmountThb:
+          parsed?.amountThb != null
+            ? new Prisma.Decimal(parsed.amountThb.toFixed(2))
+            : undefined,
+        suggestedDateSource: parsed?.dateSource ?? undefined,
+        suggestedAmountSource: parsed?.amountSource ?? undefined,
+        parseSnapshot,
+      },
+    });
+  } catch (err) {
+    console.error("[runOcrAndPatchStaging]", err);
+  }
+}
+
+export async function getReceiptStagingOcrStatus(
+  stagingId: string,
+): Promise<StagingOcrStatusPayload | null> {
+  try {
+    const prisma = getPrisma();
+    const row = await prisma.receiptStaging.findFirst({
+      where: { id: stagingId, status: "PENDING" },
+      select: {
+        parseSnapshot: true,
+        ocrText: true,
+        ocrError: true,
+        suggestedServiceDate: true,
+        suggestedAmountThb: true,
+      },
+    });
+    if (!row) {
+      return null;
+    }
+
+    const snap = row.parseSnapshot as { ocrPending?: boolean } | null;
+    const ocrPending = snap?.ocrPending === true;
+
+    return {
+      ocrPending,
+      ocrSucceeded: !ocrPending && row.ocrError == null,
+      ocrError: row.ocrError,
+      suggestedServiceDate: row.suggestedServiceDate
+        ? row.suggestedServiceDate.toISOString().slice(0, 10)
+        : null,
+      suggestedAmountThb:
+        row.suggestedAmountThb != null ? row.suggestedAmountThb.toString() : null,
+    };
+  } catch (err) {
+    console.error("[getReceiptStagingOcrStatus]", err);
     throw err;
   }
 }
