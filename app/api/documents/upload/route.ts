@@ -8,7 +8,9 @@ import { createReceiptStagingWithOcr } from "@/lib/receipt-staging-service";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-const MAX_BYTES = 15 * 1024 * 1024;
+const MAX_BYTES_LOCAL = 15 * 1024 * 1024;
+/** Server → Blob `put()` limit (Vercel); local disk path can use larger files. */
+const MAX_BYTES_BLOB_SERVER = Math.floor(4.5 * 1024 * 1024);
 const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 function uploadErrorMessageForClient(err: unknown): string {
@@ -89,8 +91,16 @@ export async function POST(request: Request) {
     }
 
     const buf = Buffer.from(await file.arrayBuffer());
-    if (buf.byteLength > MAX_BYTES) {
-      return NextResponse.json({ error: "ไฟล์ใหญ่เกิน 15MB" }, { status: 400 });
+    const maxBytes = blobToken ? MAX_BYTES_BLOB_SERVER : MAX_BYTES_LOCAL;
+    if (buf.byteLength > maxBytes) {
+      return NextResponse.json(
+        {
+          error: blobToken
+            ? "ไฟล์ใหญ่เกินขีดจำกัดการอัปโหลดผ่านเซิร์ฟเวอร์ไป Vercel Blob (ประมาณ 4.5MB) — ลดขนาดรูปหรือบีบอัดก่อนอัปโหลด"
+            : "ไฟล์ใหญ่เกิน 15MB",
+        },
+        { status: 400 },
+      );
     }
 
     const originalFilename =
