@@ -1,7 +1,6 @@
-import { unlink } from "fs/promises";
 import { getPrisma } from "@/lib/prisma";
 import { parseAmountInput, parseDateInputYmd } from "@/lib/receipt-input";
-import { resolveSafeUploadAbsolutePath } from "@/lib/upload-path";
+import { deleteStoredObject } from "@/lib/stored-object";
 
 export type DocumentListItem = {
   id: string;
@@ -142,12 +141,7 @@ export async function deleteDocumentAndFile(id: string): Promise<void> {
     if (!doc) {
       throw new Error("NOT_FOUND");
     }
-    try {
-      const abs = resolveSafeUploadAbsolutePath(doc.storedPath);
-      await unlink(abs);
-    } catch (unlinkErr) {
-      console.error("[deleteDocumentAndFile] unlink", unlinkErr);
-    }
+    await deleteStoredObject(doc.storedPath);
     await prisma.document.delete({ where: { id } });
   } catch (err) {
     console.error("[deleteDocumentAndFile]", err);

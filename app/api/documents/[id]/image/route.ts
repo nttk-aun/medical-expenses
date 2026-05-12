@@ -1,6 +1,7 @@
 import { readFile } from "fs/promises";
 import { NextResponse } from "next/server";
 import { getDocumentStoredPath } from "@/lib/documents-service";
+import { isLocalUploadsPath } from "@/lib/stored-object";
 import { resolveSafeUploadAbsolutePath } from "@/lib/upload-path";
 
 export const runtime = "nodejs";
@@ -14,6 +15,10 @@ export async function GET(
     const doc = await getDocumentStoredPath(id);
     if (!doc) {
       return new NextResponse("Not found", { status: 404 });
+    }
+
+    if (!isLocalUploadsPath(doc.storedPath)) {
+      return NextResponse.redirect(doc.storedPath, 302);
     }
 
     const abs = resolveSafeUploadAbsolutePath(doc.storedPath);

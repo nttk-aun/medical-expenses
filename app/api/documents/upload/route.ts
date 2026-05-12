@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir, unlink, writeFile } from "fs/promises";
+import { tmpdir } from "os";
 import path from "path";
 import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
@@ -29,6 +30,10 @@ function extensionForMime(mime: string): string {
 }
 
 export async function POST(request: Request) {
+  let tempOcrPath: string | null = null;
+  let blobRollbackUrl: string | null = null;
+  const blobToken = process.env.BLOB_READ_WRITE_TOKEN?.trim();
+
   try {
     const form = await request.formData();
     const file = form.get("file");
@@ -57,27 +62,61 @@ export async function POST(request: Request) {
 
     const id = randomUUID();
     const ext = extensionForMime(mimeType);
-    const relativePath = path.join("uploads", `${id}${ext}`);
-    const absolutePath = path.join(process.cwd(), relativePath);
 
-    await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, buf);
+    let storedPath: string;
+    let absoluteFilePath: string;
+
+    if (blobToken) {
+      const { put } = await import("@vercel/blob");
+      const key = `medical-expenses/${id}${ext}`;
+      const blob = await put(key, buf, { access: "public", token: blobToken });
+      storedPath = blob.url;
+      blobRollbackUrl = blob.url;
+      tempOcrPath = path.join(tmpdir(), `${id}${ext}`);
+      absoluteFilePath = tempOcrPath;
+      await writeFile(tempOcrPath, buf);
+    } else {
+      const relativePath = path.join("uploads", `${id}${ext}`);
+      const absolutePath = path.join(process.cwd(), relativePath);
+      await mkdir(path.dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, buf);
+      storedPath = relativePath.split(path.sep).join("/");
+      absoluteFilePath = absolutePath;
+    }
 
     const result = await createReceiptStagingWithOcr({
       stagingId: id,
       originalFilename,
-      absoluteFilePath: absolutePath,
-      storedPath: relativePath.split(path.sep).join("/"),
+      absoluteFilePath,
+      storedPath,
       mimeType,
       fileSizeBytes: buf.byteLength,
     });
 
+    blobRollbackUrl = null;
+
     return NextResponse.json(result, { status: 201 });
   } catch (err) {
+    if (blobRollbackUrl && blobToken) {
+      try {
+        const { del } = await import("@vercel/blob");
+        await del(blobRollbackUrl, { token: blobToken });
+      } catch (rollbackErr) {
+        console.error("[POST /api/documents/upload] blob rollback", rollbackErr);
+      }
+    }
     console.error("[POST /api/documents/upload]", err);
     return NextResponse.json(
       { error: "อัปโหลดหรือประมวลผลไม่สำเร็จ" },
       { status: 500 },
     );
+  } finally {
+    if (tempOcrPath) {
+      try {
+        await unlink(tempOcrPath);
+      } catch (cleanupErr) {
+        console.error("[POST /api/documents/upload] tmp cleanup", cleanupErr);
+      }
+    }
   }
 }

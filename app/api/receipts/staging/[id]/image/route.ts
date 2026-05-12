@@ -1,6 +1,7 @@
 import { readFile } from "fs/promises";
 import { NextResponse } from "next/server";
 import { getStagingForImage } from "@/lib/receipt-staging-service";
+import { isLocalUploadsPath } from "@/lib/stored-object";
 import { resolveSafeUploadAbsolutePath } from "@/lib/upload-path";
 
 export const runtime = "nodejs";
@@ -14,6 +15,10 @@ export async function GET(
     const row = await getStagingForImage(id);
     if (!row) {
       return new NextResponse("Not found", { status: 404 });
+    }
+
+    if (!isLocalUploadsPath(row.storedPath)) {
+      return NextResponse.redirect(row.storedPath, 302);
     }
 
     const abs = resolveSafeUploadAbsolutePath(row.storedPath);

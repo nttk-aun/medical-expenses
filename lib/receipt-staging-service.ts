@@ -1,9 +1,8 @@
-import { unlink } from "fs/promises";
 import { Prisma } from "@prisma/client";
 import type { ParsedExpense } from "@/lib/parse-expense";
 import { parseAmountInput, parseDateInputYmd } from "@/lib/receipt-input";
 import { getPrisma } from "@/lib/prisma";
-import { resolveSafeUploadAbsolutePath } from "@/lib/upload-path";
+import { deleteStoredObject } from "@/lib/stored-object";
 
 export type StagingUploadResult = {
   stagingId: string;
@@ -178,12 +177,7 @@ export async function discardReceiptStaging(stagingId: string): Promise<void> {
       throw new Error("STAGING_NOT_PENDING");
     }
 
-    try {
-      const abs = resolveSafeUploadAbsolutePath(staging.storedPath);
-      await unlink(abs);
-    } catch (unlinkErr) {
-      console.error("[discardReceiptStaging] unlink", unlinkErr);
-    }
+    await deleteStoredObject(staging.storedPath);
 
     await prisma.receiptStaging.update({
       where: { id: stagingId },
