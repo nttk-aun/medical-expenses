@@ -42,7 +42,7 @@ export function UploadForm() {
 
   const pollStagingOcr = useCallback(async (stagingId: string, signal: AbortSignal) => {
     try {
-      const maxAttempts = 120;
+      const maxAttempts = 40;
       for (let i = 0; i < maxAttempts; i++) {
         if (signal.aborted) {
           return;
@@ -51,7 +51,7 @@ export function UploadForm() {
           signal,
         });
         if (!res.ok) {
-          await new Promise((r) => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, 3000));
           continue;
         }
         const s = (await res.json()) as {
@@ -77,7 +77,7 @@ export function UploadForm() {
           );
           return;
         }
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 2500));
       }
       if (!signal.aborted) {
         setMessage(

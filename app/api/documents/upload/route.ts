@@ -2,12 +2,10 @@ import { mkdir, unlink, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import path from "path";
 import { randomUUID } from "crypto";
-import { after } from "next/server";
 import { NextResponse } from "next/server";
 import {
   createReceiptStagingPlaceholder,
   createReceiptStagingWithOcr,
-  runOcrAndPatchStaging,
 } from "@/lib/receipt-staging-service";
 
 export const runtime = "nodejs";
@@ -60,7 +58,6 @@ function extensionForMime(mime: string): string {
 export async function POST(request: Request) {
   let tempOcrPath: string | null = null;
   let blobRollbackUrl: string | null = null;
-  let deferTempCleanup = false;
   const blobToken = process.env.BLOB_READ_WRITE_TOKEN?.trim();
   const useAsyncOcr = Boolean(process.env.VERCEL && blobToken);
 
@@ -119,7 +116,7 @@ export async function POST(request: Request) {
     const ext = extensionForMime(mimeType);
 
     let storedPath: string;
-    let absoluteFilePath: string;
+    let absoluteFilePath: string | undefined;
 
     if (blobToken) {
       const { put } = await import("@vercel/blob");
@@ -127,9 +124,11 @@ export async function POST(request: Request) {
       const blob = await put(key, buf, { access: "public", token: blobToken });
       storedPath = blob.url;
       blobRollbackUrl = blob.url;
-      tempOcrPath = path.join(tmpdir(), `${id}${ext}`);
-      absoluteFilePath = tempOcrPath;
-      await writeFile(tempOcrPath, buf);
+      if (!useAsyncOcr) {
+        tempOcrPath = path.join(tmpdir(), `${id}${ext}`);
+        absoluteFilePath = tempOcrPath;
+        await writeFile(tempOcrPath, buf);
+      }
     } else {
       const relativePath = path.join("uploads", `${id}${ext}`);
       const absolutePath = path.join(process.cwd(), relativePath);
@@ -148,28 +147,6 @@ export async function POST(request: Request) {
         fileSizeBytes: buf.byteLength,
       });
       blobRollbackUrl = null;
-      deferTempCleanup = true;
-      const ocrPath = tempOcrPath;
-      after(async () => {
-        try {
-          if (ocrPath) {
-            await runOcrAndPatchStaging({
-              stagingId: id,
-              absoluteFilePath: ocrPath,
-            });
-          }
-        } catch (afterErr) {
-          console.error("[POST /api/documents/upload] after() OCR", afterErr);
-        } finally {
-          if (ocrPath) {
-            try {
-              await unlink(ocrPath);
-            } catch (unlinkErr) {
-              console.error("[POST /api/documents/upload] after() tmp cleanup", unlinkErr);
-            }
-          }
-        }
-      });
 
       return NextResponse.json(
         {
@@ -188,7 +165,7 @@ export async function POST(request: Request) {
     const result = await createReceiptStagingWithOcr({
       stagingId: id,
       originalFilename,
-      absoluteFilePath,
+      absoluteFilePath: absoluteFilePath!,
       storedPath,
       mimeType,
       fileSizeBytes: buf.byteLength,
@@ -212,7 +189,7 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   } finally {
-    if (tempOcrPath && !deferTempCleanup) {
+    if (tempOcrPath) {
       try {
         await unlink(tempOcrPath);
       } catch (cleanupErr) {

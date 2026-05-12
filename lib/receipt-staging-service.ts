@@ -1,8 +1,12 @@
+import { unlink, writeFile } from "fs/promises";
+import path from "path";
+import { tmpdir } from "os";
 import { Prisma } from "@prisma/client";
 import type { ParsedExpense } from "@/lib/parse-expense";
 import { parseAmountInput, parseDateInputYmd } from "@/lib/receipt-input";
 import { getPrisma } from "@/lib/prisma";
-import { deleteStoredObject } from "@/lib/stored-object";
+import { deleteStoredObject, isLocalUploadsPath } from "@/lib/stored-object";
+import { resolveSafeUploadAbsolutePath } from "@/lib/upload-path";
 
 export type StagingUploadResult = {
   stagingId: string;
@@ -131,10 +135,8 @@ export async function createReceiptStagingPlaceholder(args: {
 }
 
 /** Run OCR and merge into an existing placeholder row (must still be PENDING with `ocrPending` in snapshot). */
-export async function runOcrAndPatchStaging(args: {
-  stagingId: string;
-  absoluteFilePath: string;
-}): Promise<void> {
+export async function runOcrAndPatchStaging(args: { stagingId: string }): Promise<void> {
+  let downloadedTmp: string | null = null;
   try {
     const prisma = getPrisma();
     const row = await prisma.receiptStaging.findUnique({
@@ -148,6 +150,74 @@ export async function runOcrAndPatchStaging(args: {
       return;
     }
 
+    let absoluteFilePath: string;
+    try {
+      if (isLocalUploadsPath(row.storedPath)) {
+        absoluteFilePath = resolveSafeUploadAbsolutePath(row.storedPath);
+      } else {
+        const url = row.storedPath.trim();
+        if (!url.startsWith("https://")) {
+          await prisma.receiptStaging.update({
+            where: { id: args.stagingId },
+            data: {
+              ocrError: "stored_path ไม่ใช่ URL ที่อ่านรูปได้",
+              parseSnapshot: {
+                suggestedServiceDate: null,
+                suggestedAmountThb: null,
+                dateSource: null,
+                amountSource: null,
+                ocrPreview: null,
+              },
+            },
+          });
+          return;
+        }
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) {
+          await prisma.receiptStaging.update({
+            where: { id: args.stagingId },
+            data: {
+              ocrError: `โหลดรูปจาก Blob ไม่สำเร็จ (HTTP ${res.status})`,
+              parseSnapshot: {
+                suggestedServiceDate: null,
+                suggestedAmountThb: null,
+                dateSource: null,
+                amountSource: null,
+                ocrPreview: null,
+              },
+            },
+          });
+          return;
+        }
+        const buf = Buffer.from(await res.arrayBuffer());
+        const pathname = new URL(url).pathname;
+        const extFromUrl = path.extname(pathname) || ".jpg";
+        downloadedTmp = path.join(tmpdir(), `ocr-${args.stagingId}${extFromUrl}`);
+        await writeFile(downloadedTmp, buf);
+        absoluteFilePath = downloadedTmp;
+      }
+    } catch (prepErr) {
+      console.error("[runOcrAndPatchStaging] prepare image", prepErr);
+      const msg =
+        prepErr instanceof Error
+          ? prepErr.message.slice(0, 4000)
+          : String(prepErr).slice(0, 4000);
+      await prisma.receiptStaging.update({
+        where: { id: args.stagingId },
+        data: {
+          ocrError: msg,
+          parseSnapshot: {
+            suggestedServiceDate: null,
+            suggestedAmountThb: null,
+            dateSource: null,
+            amountSource: null,
+            ocrPreview: null,
+          },
+        },
+      });
+      return;
+    }
+
     let ocrText: string | null = null;
     let ocrError: string | null = null;
     let parsed: ParsedExpense | null = null;
@@ -155,7 +225,7 @@ export async function runOcrAndPatchStaging(args: {
     try {
       const { runOcrOnImagePath } = await import("@/lib/ocr");
       const { parseExpenseFromOcrText } = await import("@/lib/parse-expense");
-      const { text, lines } = await runOcrOnImagePath(args.absoluteFilePath);
+      const { text, lines } = await runOcrOnImagePath(absoluteFilePath);
       ocrText = text;
       parsed = parseExpenseFromOcrText(text, lines);
     } catch (inner) {
@@ -189,6 +259,14 @@ export async function runOcrAndPatchStaging(args: {
     });
   } catch (err) {
     console.error("[runOcrAndPatchStaging]", err);
+  } finally {
+    if (downloadedTmp) {
+      try {
+        await unlink(downloadedTmp);
+      } catch (unlinkErr) {
+        console.error("[runOcrAndPatchStaging] tmp cleanup", unlinkErr);
+      }
+    }
   }
 }
 
