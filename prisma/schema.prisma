@@ -1,0 +1,93 @@
+// Medical receipts: staging (pre-confirm) → documents + expense_extractions (after user confirm).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DocumentStatus {
+  UPLOADED
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+/// Upload + OCR suggestion; user must confirm before a `Document` is created.
+enum StagingStatus {
+  PENDING
+  CONFIRMED
+  DISCARDED
+}
+
+model ReceiptStaging {
+  id                    String        @id @db.Uuid
+  originalFilename      String        @map("original_filename")
+  storedPath            String        @map("stored_path")
+  mimeType              String        @map("mime_type")
+  fileSizeBytes         Int           @map("file_size_bytes")
+  status                StagingStatus @default(PENDING)
+  ocrText               String?       @map("ocr_text") @db.Text
+  ocrError              String?       @map("ocr_error") @db.Text
+  suggestedServiceDate  DateTime?     @map("suggested_service_date") @db.Date
+  suggestedAmountThb    Decimal?      @map("suggested_amount_thb") @db.Decimal(14, 2)
+  suggestedDateSource   String?       @map("suggested_date_source") @db.VarChar(128)
+  suggestedAmountSource String?       @map("suggested_amount_source") @db.VarChar(128)
+  /// Raw parse / OCR hints — extend per hospital without schema churn (JSONB).
+  parseSnapshot         Json?         @map("parse_snapshot")
+  expiresAt             DateTime?     @map("expires_at") @db.Timestamptz(6)
+  confirmedDocumentId   String?       @unique @map("confirmed_document_id") @db.Uuid
+  confirmedDocument     Document?     @relation("ReceiptStagingToDocument", fields: [confirmedDocumentId], references: [id])
+  createdAt             DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, createdAt])
+  @@map("receipt_staging")
+}
+
+/// Confirmed saved file + OCR text (after user confirms staging).
+model Document {
+  id               String         @id @default(uuid()) @db.Uuid
+  originalFilename String         @map("original_filename")
+  storedPath       String         @map("stored_path")
+  mimeType         String         @map("mime_type")
+  fileSizeBytes    Int            @map("file_size_bytes")
+  status           DocumentStatus @default(PROCESSED)
+  ocrText          String?        @map("ocr_text") @db.Text
+  ocrError         String?        @map("ocr_error") @db.Text
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  extractions          ExpenseExtraction[]
+  sourceReceiptStaging ReceiptStaging?     @relation("ReceiptStagingToDocument")
+
+  @@map("documents")
+}
+
+/// User-confirmed (or corrected) amounts; `extra_json` for hospital-specific lines later.
+model ExpenseExtraction {
+  id           String    @id @default(uuid()) @db.Uuid
+  documentId   String    @map("document_id") @db.Uuid
+  document     Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  serviceDate  DateTime? @map("service_date") @db.Date
+  amountThb    Decimal?  @map("amount_thb") @db.Decimal(14, 2)
+  currency     String    @default("THB") @map("currency") @db.VarChar(8)
+
+  dateSource   String?   @map("date_source") @db.VarChar(128)
+  amountSource String?   @map("amount_source") @db.VarChar(128)
+
+  userVerified Boolean   @default(false) @map("user_verified")
+  notes        String?   @db.Text
+  extraJson    Json?     @map("extra_json")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([documentId])
+  @@index([serviceDate])
+  @@map("expense_extractions")
+}
