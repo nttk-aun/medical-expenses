@@ -5,6 +5,9 @@ import {
   type DocumentListItem,
 } from "@/lib/documents-service";
 
+/** รายการมาจาก DB — ต้องไม่ถูก static cache ไม่งั้น production จะค้างข้อมูลตอน build */
+export const dynamic = "force-dynamic";
+
 export default async function Home() {
   let items: DocumentListItem[] = [];
   let loadError: string | null = null;
