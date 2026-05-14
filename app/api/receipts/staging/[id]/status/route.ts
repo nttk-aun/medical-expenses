@@ -3,7 +3,7 @@ import { getReceiptStagingOcrStatus } from "@/lib/receipt-staging-service";
 
 export const runtime = "nodejs";
 
-/** Read-only: OCR is kicked from upload via separate `process-ocr` invocation. */
+/** Read-only staging OCR state (โฟลว์หลักใช้ OCR ใน `POST /api/documents/upload` แล้ว). */
 export async function GET(
   _request: Request,
   context: { params: Promise<{ id: string }> },

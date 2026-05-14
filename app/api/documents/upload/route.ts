@@ -3,12 +3,7 @@ import { tmpdir } from "os";
 import path from "path";
 import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
-import {
-  createReceiptStagingPlaceholder,
-  createReceiptStagingWithOcr,
-  getReceiptStagingOcrStatus,
-} from "@/lib/receipt-staging-service";
-import { resolveVercelDeploymentOrigin } from "@/lib/vercel-deployment-origin";
+import { createReceiptStagingWithOcr } from "@/lib/receipt-staging-service";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -21,6 +16,9 @@ const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp"]);
 function uploadErrorMessageForClient(err: unknown): string {
   try {
     const msg = err instanceof Error ? err.message : String(err);
+    if (/504|FUNCTION_INVOCATION_TIMEOUT|timeout/i.test(msg)) {
+      return "ประมวลผลใช้เวลานานเกินขีดจำกัดของ Vercel — ลองรูปเล็กลง หรืออัปแพลนให้ฟังก์ชันรันได้นานขึ้น หรือกรอกวันที่/ยอดมือหลังอัปโหลด";
+    }
     if (/P1001|Can't reach database server/i.test(msg)) {
       return "เชื่อมต่อฐานข้อมูลไม่ได้ — ตรวจสอบ DATABASE_URL บน Vercel (Neon: ใช้ connection string แบบ pooled / `-pooler` ตามที่ผู้ให้บริการแนะนำ)";
     }
@@ -57,11 +55,14 @@ function extensionForMime(mime: string): string {
   }
 }
 
+/**
+ * โฟลว์เดียวทั้ง local และ Vercel: อัปโหลด → OCR ใน request เดียว → บันทึก staging → ตอบ JSON พร้อมวันที่/ยอดแนะนำ
+ * (ไม่แยก placeholder + job ภายนอก — ตรงกับที่ผู้ใช้คาดและเหมือน dev)
+ */
 export async function POST(request: Request) {
   let tempOcrPath: string | null = null;
   let blobRollbackUrl: string | null = null;
   const blobToken = process.env.BLOB_READ_WRITE_TOKEN?.trim();
-  const useAsyncOcr = Boolean(process.env.VERCEL && blobToken);
 
   try {
     if (process.env.VERCEL && !blobToken) {
@@ -118,7 +119,7 @@ export async function POST(request: Request) {
     const ext = extensionForMime(mimeType);
 
     let storedPath: string;
-    let absoluteFilePath: string | undefined;
+    let absoluteFilePath: string;
 
     if (blobToken) {
       const { put } = await import("@vercel/blob");
@@ -126,11 +127,9 @@ export async function POST(request: Request) {
       const blob = await put(key, buf, { access: "public", token: blobToken });
       storedPath = blob.url;
       blobRollbackUrl = blob.url;
-      if (!useAsyncOcr) {
-        tempOcrPath = path.join(tmpdir(), `${id}${ext}`);
-        absoluteFilePath = tempOcrPath;
-        await writeFile(tempOcrPath, buf);
-      }
+      tempOcrPath = path.join(tmpdir(), `${id}${ext}`);
+      absoluteFilePath = tempOcrPath;
+      await writeFile(tempOcrPath, buf);
     } else {
       const relativePath = path.join("uploads", `${id}${ext}`);
       const absolutePath = path.join(process.cwd(), relativePath);
@@ -140,91 +139,10 @@ export async function POST(request: Request) {
       absoluteFilePath = absolutePath;
     }
 
-    if (useAsyncOcr) {
-      await createReceiptStagingPlaceholder({
-        stagingId: id,
-        originalFilename,
-        storedPath,
-        mimeType,
-        fileSizeBytes: buf.byteLength,
-      });
-      blobRollbackUrl = null;
-
-      try {
-        const origin = resolveVercelDeploymentOrigin();
-        const ocrSecret = process.env.INTERNAL_OCR_SECRET?.trim();
-        const jobUrl =
-          origin && ocrSecret
-            ? `${origin}/api/receipts/staging/${id}/process-ocr`
-            : null;
-
-        if (jobUrl && ocrSecret) {
-          /** รอ OCR ใน invocation แยกจบใน request เดียว — ตอบกลับพร้อมวันที่/ยอดเมื่อสำเร็จ (ไม่พึ่งแค่ polling) */
-          const r = await fetch(jobUrl, {
-            method: "POST",
-            headers: { "x-internal-ocr-secret": ocrSecret },
-          });
-          if (!r.ok) {
-            const t = await r.text().catch(() => "");
-            console.error(
-              "[POST /api/documents/upload] OCR job HTTP",
-              r.status,
-              t.slice(0, 500),
-            );
-          }
-        } else {
-          console.error(
-            "[POST /api/documents/upload] ตั้ง INTERNAL_OCR_SECRET และให้มี VERCEL_URL หรือ VERCEL_PROJECT_PRODUCTION_URL — ไม่งั้น OCR จะไม่รัน",
-          );
-          const { waitUntil } = await import("@vercel/functions");
-          waitUntil(
-            import("@/lib/receipt-staging-service").then(({ runOcrAndPatchStaging }) =>
-              runOcrAndPatchStaging({ stagingId: id }).catch((e) => {
-                console.error("[POST /api/documents/upload] fallback waitUntil OCR", e);
-              }),
-            ),
-          );
-        }
-      } catch (schedErr) {
-        console.error("[POST /api/documents/upload] schedule OCR", schedErr);
-      }
-
-      const after = await getReceiptStagingOcrStatus(id);
-      if (after && !after.ocrPending) {
-        return NextResponse.json(
-          {
-            stagingId: id,
-            originalFilename,
-            ocrSucceeded: after.ocrSucceeded,
-            ocrError: after.ocrError,
-            suggestedServiceDate: after.suggestedServiceDate,
-            suggestedAmountThb: after.suggestedAmountThb,
-            ocrPending: false,
-          },
-          { status: 201 },
-        );
-      }
-
-      return NextResponse.json(
-        {
-          stagingId: id,
-          originalFilename,
-          ocrSucceeded: false,
-          ocrError: after?.ocrError ?? null,
-          suggestedServiceDate: after?.suggestedServiceDate ?? null,
-          suggestedAmountThb: after?.suggestedAmountThb ?? null,
-          ocrPending: true,
-          ocrAsyncHint:
-            "ถ้าค่าว่างนานเกินไป ให้ตั้ง INTERNAL_OCR_SECRET บน Vercel และ redeploy — หรือกรอกวันที่/ยอดมือในฟอร์ม",
-        },
-        { status: 201 },
-      );
-    }
-
     const result = await createReceiptStagingWithOcr({
       stagingId: id,
       originalFilename,
-      absoluteFilePath: absoluteFilePath!,
+      absoluteFilePath,
       storedPath,
       mimeType,
       fileSizeBytes: buf.byteLength,
