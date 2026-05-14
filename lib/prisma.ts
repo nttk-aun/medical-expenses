@@ -1,11 +1,15 @@
 import { PrismaClient } from "@prisma/client";
+import { normalizePostgresUrlForServerless } from "@/lib/database-url";
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefined };
 
 export function getPrisma(): PrismaClient {
   try {
     if (!globalForPrisma.prisma) {
+      const rawUrl = process.env.DATABASE_URL?.trim() ?? "";
+      const databaseUrl = rawUrl ? normalizePostgresUrlForServerless(rawUrl) : "";
       globalForPrisma.prisma = new PrismaClient({
+        ...(databaseUrl ? { datasources: { db: { url: databaseUrl } } } : {}),
         log:
           process.env.NODE_ENV === "development"
             ? ["error", "warn"]

@@ -3,11 +3,8 @@ import { unlink } from "fs/promises";
 import { resolveSafeUploadAbsolutePath } from "@/lib/upload-path";
 
 /** True when `storedPath` is a relative path under `uploads/` (local disk). */
-export function isLocalUploadsPath(storedPath: string | null | undefined): boolean {
+export function isLocalUploadsPath(storedPath: string): boolean {
   try {
-    if (!storedPath?.trim()) {
-      return false;
-    }
     const n = storedPath.trim().replace(/\\/g, "/");
     return n.startsWith("uploads/");
   } catch (err) {
@@ -16,14 +13,23 @@ export function isLocalUploadsPath(storedPath: string | null | undefined): boole
   }
 }
 
-/** Remove file from disk or object from Vercel Blob; logs and does not throw on I/O failure. */
-export async function deleteStoredObject(
-  storedPath: string | null | undefined,
-): Promise<void> {
+/** True when we can redirect the browser to this absolute URL (e.g. Vercel Blob public URL). */
+export function isHttpRedirectableStoredPath(storedPath: string): boolean {
   try {
-    if (!storedPath?.trim()) {
-      return;
+    const t = storedPath.trim();
+    if (!t) {
+      return false;
     }
+    return t.startsWith("https://") || t.startsWith("http://");
+  } catch (err) {
+    console.error("[isHttpRedirectableStoredPath]", err);
+    return false;
+  }
+}
+
+/** Remove file from disk or object from Vercel Blob; logs and does not throw on I/O failure. */
+export async function deleteStoredObject(storedPath: string): Promise<void> {
+  try {
     if (isLocalUploadsPath(storedPath)) {
       try {
         const abs = resolveSafeUploadAbsolutePath(storedPath);

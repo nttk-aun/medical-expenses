@@ -1,7 +1,10 @@
 import { readFile } from "fs/promises";
 import { NextResponse } from "next/server";
 import { getDocumentStoredPath } from "@/lib/documents-service";
-import { isLocalUploadsPath } from "@/lib/stored-object";
+import {
+  isHttpRedirectableStoredPath,
+  isLocalUploadsPath,
+} from "@/lib/stored-object";
 import { resolveSafeUploadAbsolutePath } from "@/lib/upload-path";
 
 export const runtime = "nodejs";
@@ -17,12 +20,16 @@ export async function GET(
       return new NextResponse("Not found", { status: 404 });
     }
 
-    if (!doc.storedPath?.trim()) {
-      return new NextResponse("No image stored", { status: 404 });
+    if (isHttpRedirectableStoredPath(doc.storedPath)) {
+      return NextResponse.redirect(doc.storedPath.trim(), 302);
     }
 
     if (!isLocalUploadsPath(doc.storedPath)) {
-      return NextResponse.redirect(doc.storedPath, 302);
+      console.error(
+        "[GET /api/documents/[id]/image] invalid storedPath",
+        JSON.stringify(doc.storedPath),
+      );
+      return new NextResponse("Not found", { status: 404 });
     }
 
     const abs = resolveSafeUploadAbsolutePath(doc.storedPath);

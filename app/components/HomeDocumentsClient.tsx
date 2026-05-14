@@ -70,7 +70,6 @@ export function HomeDocumentsClient({ items }: { items: DocumentListItem[] }) {
   const [formMessage, setFormMessage] = useState<string | null>(null);
   const [loadBusy, setLoadBusy] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
-  const [editImageAvailable, setEditImageAvailable] = useState(false);
 
   const closeModal = useCallback(() => {
     try {
@@ -83,17 +82,15 @@ export function HomeDocumentsClient({ items }: { items: DocumentListItem[] }) {
       setLoadError(null);
       setFormMessage(null);
       setLoadBusy(false);
-      setEditImageAvailable(false);
     } catch (err) {
       console.error("[HomeDocumentsClient.closeModal]", err);
     }
   }, []);
 
-  const openEdit = useCallback((id: string, filename: string, imageAvailable: boolean) => {
+  const openEdit = useCallback((id: string, filename: string) => {
     try {
       setEditDocId(id);
       setEditFilename(filename);
-      setEditImageAvailable(imageAvailable);
       setEditOpen(true);
       setLoadError(null);
       setFormMessage(null);
@@ -228,23 +225,14 @@ export function HomeDocumentsClient({ items }: { items: DocumentListItem[] }) {
               <tr key={row.id} className="align-middle">
                 <td className="px-4 py-3">
                   <div className="relative h-14 w-14 overflow-hidden rounded-md border border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900">
-                    {row.imageAvailable ? (
-                      <Image
-                        src={`/api/documents/${row.id}/image`}
-                        alt={row.originalFilename}
-                        fill
-                        className="object-cover"
-                        sizes="56px"
-                        unoptimized
-                      />
-                    ) : (
-                      <span
-                        className="flex h-full w-full items-center justify-center text-[10px] font-medium text-zinc-500 dark:text-zinc-400"
-                        title="ไม่มีไฟล์รูปในระบบ"
-                      >
-                        ไม่มีรูป
-                      </span>
-                    )}
+                    <Image
+                      src={`/api/documents/${row.id}/image`}
+                      alt={row.originalFilename}
+                      fill
+                      className="object-cover"
+                      sizes="56px"
+                      unoptimized
+                    />
                   </div>
                 </td>
                 <td className="max-w-[200px] truncate px-4 py-3 font-medium text-zinc-900 dark:text-zinc-100">
@@ -277,10 +265,7 @@ export function HomeDocumentsClient({ items }: { items: DocumentListItem[] }) {
                 <td className="whitespace-nowrap px-4 py-3 text-right">
                   <DocumentRowActions
                     documentId={row.id}
-                    imageAvailable={row.imageAvailable}
-                    onEditClick={() =>
-                      openEdit(row.id, row.originalFilename, row.imageAvailable)
-                    }
+                    onEditClick={() => openEdit(row.id, row.originalFilename)}
                   />
                 </td>
               </tr>
@@ -398,16 +383,14 @@ export function HomeDocumentsClient({ items }: { items: DocumentListItem[] }) {
                   >
                     ยกเลิก
                   </button>
-                  {editImageAvailable ? (
-                    <a
-                      href={editDocId ? `/api/documents/${editDocId}/image` : "#"}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex h-10 items-center justify-center text-sm font-medium text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400"
-                    >
-                      ดูรูป
-                    </a>
-                  ) : null}
+                  <a
+                    href={editDocId ? `/api/documents/${editDocId}/image` : "#"}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-10 items-center justify-center text-sm font-medium text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400"
+                  >
+                    ดูรูป
+                  </a>
                 </div>
               </div>
             )}

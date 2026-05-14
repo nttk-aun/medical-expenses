@@ -55,12 +55,9 @@ function IconTrash({ className }: { className?: string }) {
 
 export function DocumentRowActions({
   documentId,
-  imageAvailable = true,
   onEditClick,
 }: {
   documentId: string;
-  /** false = ไม่มีไฟล์รูปในระบบ (flow ไม่เก็บรูป) */
-  imageAvailable?: boolean;
   onEditClick: () => void;
 }) {
   const router = useRouter();
@@ -71,7 +68,7 @@ export function DocumentRowActions({
       if (busy) {
         return;
       }
-      if (!window.confirm("ลบรายการนี้ออกจากระบบ?")) {
+      if (!window.confirm("ลบเอกสารนี้และไฟล์รูปออกจากระบบ?")) {
         return;
       }
       setBusy(true);
@@ -109,18 +106,16 @@ export function DocumentRowActions({
       >
         <IconPencil />
       </button>
-      {imageAvailable ? (
-        <a
-          href={imageHref}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="ดูรูป"
-          title="ดูรูป"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-        >
-          <IconPhoto />
-        </a>
-      ) : null}
+      <a
+        href={imageHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="ดูรูป"
+        title="ดูรูป"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+      >
+        <IconPhoto />
+      </a>
       <button
         type="button"
         aria-label="ลบ"

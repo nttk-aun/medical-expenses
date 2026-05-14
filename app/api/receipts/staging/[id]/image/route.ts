@@ -1,7 +1,10 @@
 import { readFile } from "fs/promises";
 import { NextResponse } from "next/server";
 import { getStagingForImage } from "@/lib/receipt-staging-service";
-import { isLocalUploadsPath } from "@/lib/stored-object";
+import {
+  isHttpRedirectableStoredPath,
+  isLocalUploadsPath,
+} from "@/lib/stored-object";
 import { resolveSafeUploadAbsolutePath } from "@/lib/upload-path";
 
 export const runtime = "nodejs";
@@ -17,12 +20,16 @@ export async function GET(
       return new NextResponse("Not found", { status: 404 });
     }
 
-    if (!row.storedPath?.trim()) {
-      return new NextResponse("No image stored", { status: 404 });
+    if (isHttpRedirectableStoredPath(row.storedPath)) {
+      return NextResponse.redirect(row.storedPath.trim(), 302);
     }
 
     if (!isLocalUploadsPath(row.storedPath)) {
-      return NextResponse.redirect(row.storedPath, 302);
+      console.error(
+        "[GET /api/receipts/staging/[id]/image] invalid storedPath",
+        JSON.stringify(row.storedPath),
+      );
+      return new NextResponse("Not found", { status: 404 });
     }
 
     const abs = resolveSafeUploadAbsolutePath(row.storedPath);
