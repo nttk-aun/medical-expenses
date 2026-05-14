@@ -1,8 +1,7 @@
 "use client";
 
-import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ceIsoDateStringToThaiBeDdMmYyyy,
@@ -24,76 +23,43 @@ type PreviewState = {
 export function UploadForm() {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
-  const [ocrLoading, setOcrLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
-  const pollAbortRef = useRef<AbortController | null>(null);
+  /** ตัวอย่างรูปจากเครื่องผู้ใช้เท่านั้น — ไม่เก็บบนเซิร์ฟเวอร์ */
+  const [previewObjectUrl, setPreviewObjectUrl] = useState<string | null>(null);
+  const previewObjectUrlRef = useRef<string | null>(null);
+
+  const revokePreviewUrl = useCallback(() => {
+    try {
+      const u = previewObjectUrlRef.current;
+      if (u) {
+        URL.revokeObjectURL(u);
+      }
+      previewObjectUrlRef.current = null;
+      setPreviewObjectUrl(null);
+    } catch (err) {
+      console.error("[UploadForm.revokePreviewUrl]", err);
+    }
+  }, []);
 
   const resetPreview = useCallback(() => {
     try {
-      pollAbortRef.current?.abort();
-      pollAbortRef.current = null;
+      revokePreviewUrl();
       setPreview(null);
-      setOcrLoading(false);
     } catch (err) {
       console.error("[UploadForm.resetPreview]", err);
     }
-  }, []);
+  }, [revokePreviewUrl]);
 
-  const pollStagingOcr = useCallback(async (stagingId: string, signal: AbortSignal) => {
-    try {
-      const maxAttempts = 40;
-      for (let i = 0; i < maxAttempts; i++) {
-        if (signal.aborted) {
-          return;
-        }
-        const res = await fetch(`/api/receipts/staging/${stagingId}/status`, {
-          signal,
-        });
-        if (!res.ok) {
-          await new Promise((r) => setTimeout(r, 3000));
-          continue;
-        }
-        const s = (await res.json()) as {
-          ocrPending?: boolean;
-          ocrSucceeded?: boolean;
-          ocrError?: string | null;
-          suggestedServiceDate?: string | null;
-          suggestedAmountThb?: string | null;
-        };
-        if (!s.ocrPending) {
-          setPreview((prev) =>
-            prev && prev.stagingId === stagingId
-              ? {
-                  ...prev,
-                  ocrSucceeded: s.ocrSucceeded !== false,
-                  ocrError: s.ocrError ?? null,
-                  serviceDateThaiBe: ceIsoDateStringToThaiBeDdMmYyyy(
-                    s.suggestedServiceDate ?? "",
-                  ),
-                  amountThb: s.suggestedAmountThb ?? "",
-                }
-              : prev,
-          );
-          return;
-        }
-        await new Promise((r) => setTimeout(r, 2500));
+  useEffect(() => {
+    return () => {
+      try {
+        revokePreviewUrl();
+      } catch (err) {
+        console.error("[UploadForm unmount revoke]", err);
       }
-      if (!signal.aborted) {
-        setMessage(
-          "การอ่านข้อความจากรูปใช้เวลานาน — กรอกวันที่และยอดเองในช่องด้านล่างได้",
-        );
-      }
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        return;
-      }
-      console.error("[UploadForm.pollStagingOcr]", err);
-      if (!signal.aborted) {
-        setMessage("ไม่สามารถโหลดผลการอ่านข้อความอัตโนมัติ — กรอกข้อมูลเองได้");
-      }
-    }
-  }, []);
+    };
+  }, [revokePreviewUrl]);
 
   async function onSubmitUpload(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -107,6 +73,9 @@ export function UploadForm() {
         setMessage("กรุณาเลือกไฟล์");
         return;
       }
+
+      const localPreviewUrl = URL.createObjectURL(file);
+
       const fd = new FormData();
       fd.set("file", file);
       const res = await fetch("/api/documents/upload", {
@@ -120,53 +89,34 @@ export function UploadForm() {
         ocrError?: string | null;
         suggestedServiceDate?: string | null;
         suggestedAmountThb?: string | null;
-        ocrPending?: boolean;
         error?: string;
       };
       if (!res.ok) {
+        URL.revokeObjectURL(localPreviewUrl);
         setMessage(data.error ?? "อัปโหลดไม่สำเร็จ");
         return;
       }
       if (!data.stagingId) {
+        URL.revokeObjectURL(localPreviewUrl);
         setMessage("ตอบกลับจากเซิร์ฟเวอร์ไม่สมบูรณ์");
         return;
       }
 
-      pollAbortRef.current?.abort();
-      pollAbortRef.current = new AbortController();
-      const ac = pollAbortRef.current;
+      revokePreviewUrl();
+      previewObjectUrlRef.current = localPreviewUrl;
+      setPreviewObjectUrl(localPreviewUrl);
 
-      if (data.ocrPending) {
-        setOcrLoading(true);
-        setPreview({
-          stagingId: data.stagingId,
-          originalFilename: data.originalFilename ?? file.name,
-          ocrSucceeded: false,
-          ocrError: null,
-          serviceDateThaiBe: "",
-          amountThb: "",
-          notes: "",
-        });
-        void pollStagingOcr(data.stagingId, ac.signal).finally(() => {
-          try {
-            setOcrLoading(false);
-          } catch (e) {
-            console.error("[UploadForm] poll finally", e);
-          }
-        });
-      } else {
-        setPreview({
-          stagingId: data.stagingId,
-          originalFilename: data.originalFilename ?? file.name,
-          ocrSucceeded: data.ocrSucceeded !== false,
-          ocrError: data.ocrError ?? null,
-          serviceDateThaiBe: ceIsoDateStringToThaiBeDdMmYyyy(
-            data.suggestedServiceDate ?? "",
-          ),
-          amountThb: data.suggestedAmountThb ?? "",
-          notes: "",
-        });
-      }
+      setPreview({
+        stagingId: data.stagingId,
+        originalFilename: data.originalFilename ?? file.name,
+        ocrSucceeded: data.ocrSucceeded !== false,
+        ocrError: data.ocrError ?? null,
+        serviceDateThaiBe: ceIsoDateStringToThaiBeDdMmYyyy(
+          data.suggestedServiceDate ?? "",
+        ),
+        amountThb: data.suggestedAmountThb ?? "",
+        notes: "",
+      });
       form.reset();
     } catch (err) {
       console.error("[UploadForm.onSubmitUpload]", err);
@@ -258,6 +208,9 @@ export function UploadForm() {
             <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
               {preview.originalFilename} — ตรวจวันที่กับยอดให้ตรงใบ แล้วกดยืนยัน
             </p>
+            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+              รูปแสดงเฉพาะบนเครื่องคุณ ระบบไม่เก็บไฟล์รูปบนเซิร์ฟเวอร์
+            </p>
           </div>
 
           {!preview.ocrSucceeded && preview.ocrError ? (
@@ -266,22 +219,16 @@ export function UploadForm() {
             </p>
           ) : null}
 
-          {ocrLoading ? (
-            <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-950 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-100">
-              กำลังอ่านข้อความจากรูป (อาจใช้เวลา 10–90 วินาที)… รอผลได้หรือกรอกวันที่กับยอดเองได้
-            </p>
+          {previewObjectUrl ? (
+            <div className="relative aspect-[4/3] w-full max-w-sm overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={previewObjectUrl}
+                alt="ตัวอย่างใบเสร็จ"
+                className="h-full w-full object-contain"
+              />
+            </div>
           ) : null}
-
-          <div className="relative aspect-[4/3] w-full max-w-sm overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900">
-            <Image
-              src={`/api/receipts/staging/${preview.stagingId}/image`}
-              alt="ตัวอย่างใบเสร็จ"
-              fill
-              className="object-contain"
-              sizes="400px"
-              unoptimized
-            />
-          </div>
 
           <label className="flex flex-col gap-1 text-sm font-medium text-zinc-800 dark:text-zinc-100">
             วันที่รักษา
@@ -407,12 +354,15 @@ export function UploadForm() {
             required
           />
         </label>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          รูปจะถูกอ่านด้วย Tesseract บนเซิร์ฟเวอร์แล้วทิ้ง — ไม่เก็บไฟล์รูป มีเฉพาะข้อความ OCR และยอดในฐานข้อมูล
+        </p>
         <button
           type="submit"
           disabled={busy}
           className="inline-flex h-11 items-center justify-center rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {busy ? "กำลังอัปโหลดและ OCR…" : "อัปโหลดและอ่านข้อความ"}
+          {busy ? "กำลังอ่านข้อความจากรูป…" : "อัปโหลดและอ่านข้อความ"}
         </button>
         {message ? (
           <p className="text-sm text-zinc-600 dark:text-zinc-400">{message}</p>

@@ -17,6 +17,10 @@ export async function GET(
       return new NextResponse("Not found", { status: 404 });
     }
 
+    if (!doc.storedPath?.trim()) {
+      return new NextResponse("No image stored", { status: 404 });
+    }
+
     if (!isLocalUploadsPath(doc.storedPath)) {
       return NextResponse.redirect(doc.storedPath, 302);
     }

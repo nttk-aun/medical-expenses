@@ -3,8 +3,11 @@ import { unlink } from "fs/promises";
 import { resolveSafeUploadAbsolutePath } from "@/lib/upload-path";
 
 /** True when `storedPath` is a relative path under `uploads/` (local disk). */
-export function isLocalUploadsPath(storedPath: string): boolean {
+export function isLocalUploadsPath(storedPath: string | null | undefined): boolean {
   try {
+    if (!storedPath?.trim()) {
+      return false;
+    }
     const n = storedPath.trim().replace(/\\/g, "/");
     return n.startsWith("uploads/");
   } catch (err) {
@@ -14,8 +17,13 @@ export function isLocalUploadsPath(storedPath: string): boolean {
 }
 
 /** Remove file from disk or object from Vercel Blob; logs and does not throw on I/O failure. */
-export async function deleteStoredObject(storedPath: string): Promise<void> {
+export async function deleteStoredObject(
+  storedPath: string | null | undefined,
+): Promise<void> {
   try {
+    if (!storedPath?.trim()) {
+      return;
+    }
     if (isLocalUploadsPath(storedPath)) {
       try {
         const abs = resolveSafeUploadAbsolutePath(storedPath);

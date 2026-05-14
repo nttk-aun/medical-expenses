@@ -1,5 +1,5 @@
 import { createWorker, type Worker } from "tesseract.js";
-import { preprocessImageBufferForOcr } from "@/lib/ocr-prep";
+import { preprocessImageBufferForOcr, preprocessImageBufferFromBytes } from "@/lib/ocr-prep";
 
 export type OcrBbox = {
   x0: number;
@@ -55,6 +55,30 @@ function flattenOcrLinesFromData(data: unknown): OcrLineBox[] {
   } catch (err) {
     console.error("[flattenOcrLinesFromData]", err);
     return out;
+  }
+}
+
+export async function runOcrOnImageBuffer(imageBytes: Buffer): Promise<OcrResult> {
+  let worker: Worker | undefined;
+  try {
+    worker = await createWorker("tha+eng");
+    const prepared = await preprocessImageBufferFromBytes(imageBytes);
+    const input: string | Buffer = prepared ?? imageBytes;
+    const { data } = await worker.recognize(input);
+    const text = data?.text ?? "";
+    const lines = flattenOcrLinesFromData(data);
+    return { text, lines };
+  } catch (err) {
+    console.error("[runOcrOnImageBuffer]", err);
+    throw err;
+  } finally {
+    try {
+      if (worker) {
+        await worker.terminate();
+      }
+    } catch (err) {
+      console.error("[runOcrOnImageBuffer] terminate", err);
+    }
   }
 }
 

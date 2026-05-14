@@ -26,7 +26,7 @@ enum StagingStatus {
 model ReceiptStaging {
   id                    String        @id @db.Uuid
   originalFilename      String        @map("original_filename")
-  storedPath            String        @map("stored_path")
+  storedPath            String?       @map("stored_path")
   mimeType              String        @map("mime_type")
   fileSizeBytes         Int           @map("file_size_bytes")
   status                StagingStatus @default(PENDING)
@@ -52,7 +52,7 @@ model ReceiptStaging {
 model Document {
   id               String         @id @default(uuid()) @db.Uuid
   originalFilename String         @map("original_filename")
-  storedPath       String         @map("stored_path")
+  storedPath       String?        @map("stored_path")
   mimeType         String         @map("mime_type")
   fileSizeBytes    Int            @map("file_size_bytes")
   status           DocumentStatus @default(PROCESSED)

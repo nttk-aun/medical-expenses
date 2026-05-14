@@ -11,6 +11,8 @@ export type DocumentListItem = {
   amountThb: string | null;
   currency: string;
   ocrError: string | null;
+  /** false เมื่อไม่เก็บไฟล์รูป (เช่น flow ใหม่) — ซ่อนภาพตัวอย่างและลิงก์ดูรูป */
+  imageAvailable: boolean;
 };
 
 export type DocumentEditPayload = {
@@ -42,6 +44,7 @@ export async function listDocumentsWithExtractions(): Promise<DocumentListItem[]
         amountThb: ex?.amountThb != null ? ex.amountThb.toString() : null,
         currency: ex?.currency ?? "THB",
         ocrError: d.ocrError ?? null,
+        imageAvailable: !!(d.storedPath && d.storedPath.trim()),
       };
     });
   } catch (err) {
@@ -51,7 +54,7 @@ export async function listDocumentsWithExtractions(): Promise<DocumentListItem[]
 }
 
 export async function getDocumentStoredPath(id: string): Promise<{
-  storedPath: string;
+  storedPath: string | null;
   mimeType: string;
   originalFilename: string;
 } | null> {
