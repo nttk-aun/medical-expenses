@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useCallback, useRef, useState } from "react";
 
@@ -350,9 +351,8 @@ export function UploadForm() {
     }
   }
 
-  try {
-    if (preview) {
-      return (
+  if (preview) {
+    return (
         <div className="flex max-w-xl flex-col gap-4 rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-950">
           <div>
             <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">
@@ -376,13 +376,16 @@ export function UploadForm() {
           ) : null}
 
           <div className="relative aspect-[4/3] w-full max-w-sm overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900">
-            <img
+            <Image
               src={
                 preview.previewImageSrc ??
                 `/api/receipts/staging/${preview.stagingId}/image`
               }
               alt="ตัวอย่างใบเสร็จ"
-              className="h-full w-full object-contain"
+              fill
+              className="object-contain"
+              sizes="(max-width: 640px) 100vw, 384px"
+              unoptimized
             />
           </div>
 
@@ -491,11 +494,11 @@ export function UploadForm() {
             <p className="text-sm text-zinc-600 dark:text-zinc-400">{message}</p>
           ) : null}
         </div>
-      );
-    }
+    );
+  }
 
-    return (
-      <form
+  return (
+    <form
         onSubmit={onSubmitUpload}
         className="flex max-w-xl flex-col gap-4 rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-950"
       >
@@ -525,14 +528,6 @@ export function UploadForm() {
         {message ? (
           <p className="text-sm text-zinc-600 dark:text-zinc-400">{message}</p>
         ) : null}
-      </form>
-    );
-  } catch (err) {
-    console.error("[UploadForm] render", err);
-    return (
-      <p className="text-sm text-red-600">
-        เกิดข้อผิดพลาดในการแสดงฟอร์ม
-      </p>
-    );
-  }
+    </form>
+  );
 }

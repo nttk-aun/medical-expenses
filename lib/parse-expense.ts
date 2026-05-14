@@ -360,6 +360,74 @@ function lineHasWeakMoneyKeyword(line: string): boolean {
   }
 }
 
+/** บรรทัดที่น่าจะเป็นวันที่ (มักมีปี พ.ศ. 4 หลัก — ห้ามเอาเลขนั้นเป็นยอดเงิน) */
+function lineLooksLikeDateContext(line: string): boolean {
+  try {
+    return (
+      /วันที่|ทำรายการ|พ\.ศ\.|ค\.ศ\.|ตั้งแต่|ถึงวันที่/i.test(line) ||
+      /\d{1,2}\s*(?:พ\.ค\.|ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.)/i.test(
+        line,
+      ) ||
+      /(มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)/u.test(
+        line,
+      )
+    );
+  } catch (err) {
+    console.error("[lineLooksLikeDateContext]", err);
+    return false;
+  }
+}
+
+/**
+ * เลขจำนวนเต็ม ~พ.ศ. บนบรรทัดที่เป็นวันที่ — ไม่ใช่ยอดเงิน (เช่น slip Krungthai "10 พ.ค. 2569")
+ */
+function rejectAsBuddhistYearAmountNotMoney(
+  line: string,
+  raw: string,
+  amount: number,
+): boolean {
+  try {
+    const cleaned = raw.replace(/,/g, "").replace(/\s+/g, "").trim();
+    if (!/^\d{4}(\.0+)?$/.test(cleaned)) {
+      return false;
+    }
+    if (!Number.isFinite(amount) || amount < 2460 || amount > 2625) {
+      return false;
+    }
+    if (lineHasStrongTotalKeyword(line) || /จำนวนเงิน/i.test(line)) {
+      return false;
+    }
+    /** บรรทัดมีแค่เลข 4 หลักแบบปี พ.ศ. โดยไม่มี "บาท" — มักเป็นเศษบรรทัดจาก OCR */
+    const lineTrim = line.replace(/\u00a0/g, " ").trim();
+    if (
+      /^\d{4}(\.\d+)?$/.test(lineTrim) &&
+      amount >= 2540 &&
+      amount <= 2625 &&
+      !/บาท|THB|฿/i.test(line)
+    ) {
+      return true;
+    }
+    return lineLooksLikeDateContext(line);
+  } catch (err) {
+    console.error("[rejectAsBuddhistYearAmountNotMoney]", err);
+    return false;
+  }
+}
+
+/** บรรทัดเต็มที่มีตัวอักษรตำแหน่ง index (ใช้กรองยอดจาก heuristic บนข้อความยาว) */
+function getLineContainingIndex(text: string, index: number): string {
+  try {
+    const left = text.lastIndexOf("\n", index);
+    const right = text.indexOf("\n", index);
+    const start = left === -1 ? 0 : left + 1;
+    const end = right === -1 ? text.length : right;
+    return text.slice(start, end).trim();
+  } catch (err) {
+    console.error("[getLineContainingIndex]", err);
+    return "";
+  }
+}
+
 /** ดึงช่วงตัวเลขเงิน — จับยาวสุดก่อน กันปัญหา 2500 → 250 และจุดคั่นหลักพัน (OCR อ่าน comma เป็น .) เช่น 1.000.00 ไม่ให้หลุดเป็น 1.00 */
 function findMoneySpansInString(text: string): Array<{ raw: string; start: number; end: number }> {
   try {
@@ -416,6 +484,9 @@ function collectMoneyCandidatesInText(
       if (isLikelyReceiptReferenceToken(span.raw, amount)) {
         continue;
       }
+      if (rejectAsBuddhistYearAmountNotMoney(text, span.raw, amount)) {
+        continue;
+      }
       found.push({ raw: span.raw, amount, index: baseIndex + span.start });
     }
     return found;
@@ -455,7 +526,7 @@ function extractBestAmountFromOcrLines(
       return null;
     }
 
-    type Cand = { amount: number; score: number; source: string };
+    type Cand = { amount: number; score: number; source: string; hasDecimals: boolean };
     const cands: Cand[] = [];
 
     for (const ln of ocrLines) {
@@ -478,6 +549,7 @@ function extractBestAmountFromOcrLines(
           amount: h.amount,
           score,
           source: "ocr_bbox_bottom_right",
+          hasDecimals,
         });
       }
     }
@@ -485,7 +557,12 @@ function extractBestAmountFromOcrLines(
     if (cands.length === 0) {
       return null;
     }
-    cands.sort((a, b) => b.score - a.score || b.amount - a.amount);
+    cands.sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return (b.hasDecimals ? 1 : 0) - (a.hasDecimals ? 1 : 0);
+    });
     const best = cands[0];
     return { amount: best.amount, source: best.source };
   } catch (err) {
@@ -505,7 +582,7 @@ function extractBestAmountFromPlainLines(
     if (lines.length === 0) {
       return null;
     }
-    type Cand = { amount: number; score: number };
+    type Cand = { amount: number; score: number; hasDecimals: boolean };
     const cands: Cand[] = [];
     const n = lines.length;
     for (let i = 0; i < n; i++) {
@@ -520,13 +597,18 @@ function extractBestAmountFromPlainLines(
         const formatBoost = hasDecimals ? 60_000 : 0;
         const score =
           bottomWeight * 2_200_000 + kw + formatBoost + Math.min(h.amount, 200_000) / 6000;
-        cands.push({ amount: h.amount, score });
+        cands.push({ amount: h.amount, score, hasDecimals });
       }
     }
     if (cands.length === 0) {
       return null;
     }
-    cands.sort((a, b) => b.score - a.score || b.amount - a.amount);
+    cands.sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return (b.hasDecimals ? 1 : 0) - (a.hasDecimals ? 1 : 0);
+    });
     return { amount: cands[0].amount, source: "ocr_text_lines_bottom" };
   } catch (err) {
     console.error("[extractBestAmountFromPlainLines]", err);
@@ -572,7 +654,12 @@ function extractBestAmount(
     }
 
     const moneySpans = findMoneySpansInString(text);
-    const amounts: Array<{ amount: number; index: number; bonus: number }> = [];
+    const amounts: Array<{
+      amount: number;
+      index: number;
+      bonus: number;
+      hasDecimals: boolean;
+    }> = [];
     for (const span of moneySpans) {
       const raw = span.raw;
       const amount = parseMoneyToken(raw);
@@ -582,16 +669,26 @@ function extractBestAmount(
       if (isLikelyReceiptReferenceToken(raw, amount)) {
         continue;
       }
+      const lineForReject = getLineContainingIndex(text, span.start);
+      if (rejectAsBuddhistYearAmountNotMoney(lineForReject, raw, amount)) {
+        continue;
+      }
       const index = span.start;
       const nearKeyword = keywordOffsets.some((k) => Math.abs(k - index) < 100);
       const bonus = nearKeyword ? 1_000_000 : 0;
-      amounts.push({ amount, index, bonus: bonus + amount });
+      const hasDecimals = /\.\d{2}$/.test(raw) || raw.includes(",");
+      amounts.push({ amount, index, bonus: bonus + amount, hasDecimals });
     }
 
     if (amounts.length === 0) {
       return null;
     }
-    amounts.sort((a, b) => b.bonus - a.bonus || b.amount - a.amount);
+    amounts.sort((a, b) => {
+      if (b.bonus !== a.bonus) {
+        return b.bonus - a.bonus;
+      }
+      return (b.hasDecimals ? 1 : 0) - (a.hasDecimals ? 1 : 0);
+    });
     const best = amounts[0];
     return { amount: best.amount, source: "heuristic_money_legacy" };
   } catch (err) {
