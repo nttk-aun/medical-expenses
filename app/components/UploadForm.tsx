@@ -121,6 +121,7 @@ export function UploadForm() {
         suggestedServiceDate?: string | null;
         suggestedAmountThb?: string | null;
         ocrPending?: boolean;
+        ocrAsyncHint?: string;
         error?: string;
       };
       if (!res.ok) {
@@ -137,6 +138,9 @@ export function UploadForm() {
       const ac = pollAbortRef.current;
 
       if (data.ocrPending) {
+        if (data.ocrAsyncHint) {
+          setMessage(data.ocrAsyncHint);
+        }
         setOcrLoading(true);
         setPreview({
           stagingId: data.stagingId,

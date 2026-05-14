@@ -6,7 +6,9 @@ import { NextResponse } from "next/server";
 import {
   createReceiptStagingPlaceholder,
   createReceiptStagingWithOcr,
+  getReceiptStagingOcrStatus,
 } from "@/lib/receipt-staging-service";
+import { resolveVercelDeploymentOrigin } from "@/lib/vercel-deployment-origin";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -149,38 +151,32 @@ export async function POST(request: Request) {
       blobRollbackUrl = null;
 
       try {
-        const { waitUntil } = await import("@vercel/functions");
-        const vercelUrl = process.env.VERCEL_URL?.trim();
+        const origin = resolveVercelDeploymentOrigin();
         const ocrSecret = process.env.INTERNAL_OCR_SECRET?.trim();
         const jobUrl =
-          vercelUrl && ocrSecret
-            ? `https://${vercelUrl}/api/receipts/staging/${id}/process-ocr`
+          origin && ocrSecret
+            ? `${origin}/api/receipts/staging/${id}/process-ocr`
             : null;
 
         if (jobUrl && ocrSecret) {
-          waitUntil(
-            fetch(jobUrl, {
-              method: "POST",
-              headers: { "x-internal-ocr-secret": ocrSecret },
-            })
-              .then(async (r) => {
-                if (!r.ok) {
-                  const t = await r.text().catch(() => "");
-                  console.error(
-                    "[POST /api/documents/upload] OCR job HTTP",
-                    r.status,
-                    t.slice(0, 500),
-                  );
-                }
-              })
-              .catch((e) => {
-                console.error("[POST /api/documents/upload] OCR job fetch", e);
-              }),
-          );
+          /** รอ OCR ใน invocation แยกจบใน request เดียว — ตอบกลับพร้อมวันที่/ยอดเมื่อสำเร็จ (ไม่พึ่งแค่ polling) */
+          const r = await fetch(jobUrl, {
+            method: "POST",
+            headers: { "x-internal-ocr-secret": ocrSecret },
+          });
+          if (!r.ok) {
+            const t = await r.text().catch(() => "");
+            console.error(
+              "[POST /api/documents/upload] OCR job HTTP",
+              r.status,
+              t.slice(0, 500),
+            );
+          }
         } else {
           console.error(
-            "[POST /api/documents/upload] ตั้ง INTERNAL_OCR_SECRET และตรวจว่า VERCEL_URL มีค่า — ไม่งั้น OCR อาจไม่รันบน serverless",
+            "[POST /api/documents/upload] ตั้ง INTERNAL_OCR_SECRET และให้มี VERCEL_URL หรือ VERCEL_PROJECT_PRODUCTION_URL — ไม่งั้น OCR จะไม่รัน",
           );
+          const { waitUntil } = await import("@vercel/functions");
           waitUntil(
             import("@/lib/receipt-staging-service").then(({ runOcrAndPatchStaging }) =>
               runOcrAndPatchStaging({ stagingId: id }).catch((e) => {
@@ -193,15 +189,33 @@ export async function POST(request: Request) {
         console.error("[POST /api/documents/upload] schedule OCR", schedErr);
       }
 
+      const after = await getReceiptStagingOcrStatus(id);
+      if (after && !after.ocrPending) {
+        return NextResponse.json(
+          {
+            stagingId: id,
+            originalFilename,
+            ocrSucceeded: after.ocrSucceeded,
+            ocrError: after.ocrError,
+            suggestedServiceDate: after.suggestedServiceDate,
+            suggestedAmountThb: after.suggestedAmountThb,
+            ocrPending: false,
+          },
+          { status: 201 },
+        );
+      }
+
       return NextResponse.json(
         {
           stagingId: id,
           originalFilename,
           ocrSucceeded: false,
-          ocrError: null,
-          suggestedServiceDate: null,
-          suggestedAmountThb: null,
+          ocrError: after?.ocrError ?? null,
+          suggestedServiceDate: after?.suggestedServiceDate ?? null,
+          suggestedAmountThb: after?.suggestedAmountThb ?? null,
           ocrPending: true,
+          ocrAsyncHint:
+            "ถ้าค่าว่างนานเกินไป ให้ตั้ง INTERNAL_OCR_SECRET บน Vercel และ redeploy — หรือกรอกวันที่/ยอดมือในฟอร์ม",
         },
         { status: 201 },
       );
