@@ -148,6 +148,51 @@ export async function POST(request: Request) {
       });
       blobRollbackUrl = null;
 
+      try {
+        const { waitUntil } = await import("@vercel/functions");
+        const vercelUrl = process.env.VERCEL_URL?.trim();
+        const ocrSecret = process.env.INTERNAL_OCR_SECRET?.trim();
+        const jobUrl =
+          vercelUrl && ocrSecret
+            ? `https://${vercelUrl}/api/receipts/staging/${id}/process-ocr`
+            : null;
+
+        if (jobUrl && ocrSecret) {
+          waitUntil(
+            fetch(jobUrl, {
+              method: "POST",
+              headers: { "x-internal-ocr-secret": ocrSecret },
+            })
+              .then(async (r) => {
+                if (!r.ok) {
+                  const t = await r.text().catch(() => "");
+                  console.error(
+                    "[POST /api/documents/upload] OCR job HTTP",
+                    r.status,
+                    t.slice(0, 500),
+                  );
+                }
+              })
+              .catch((e) => {
+                console.error("[POST /api/documents/upload] OCR job fetch", e);
+              }),
+          );
+        } else {
+          console.error(
+            "[POST /api/documents/upload] ตั้ง INTERNAL_OCR_SECRET และตรวจว่า VERCEL_URL มีค่า — ไม่งั้น OCR อาจไม่รันบน serverless",
+          );
+          waitUntil(
+            import("@/lib/receipt-staging-service").then(({ runOcrAndPatchStaging }) =>
+              runOcrAndPatchStaging({ stagingId: id }).catch((e) => {
+                console.error("[POST /api/documents/upload] fallback waitUntil OCR", e);
+              }),
+            ),
+          );
+        }
+      } catch (schedErr) {
+        console.error("[POST /api/documents/upload] schedule OCR", schedErr);
+      }
+
       return NextResponse.json(
         {
           stagingId: id,
