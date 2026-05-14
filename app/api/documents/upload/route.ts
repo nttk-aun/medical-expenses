@@ -56,13 +56,14 @@ function extensionForMime(mime: string): string {
 }
 
 /**
- * โฟลว์เดียวทั้ง local และ Vercel: อัปโหลด → OCR ใน request เดียว → บันทึก staging → ตอบ JSON พร้อมวันที่/ยอดแนะนำ
- * (ไม่แยก placeholder + job ภายนอก — ตรงกับที่ผู้ใช้คาดและเหมือน dev)
+ * - `?mode=blob`: อัปโหลดไป Vercel Blob อย่างเดียว (ตอบเร็ว) — OCR ทำในเบราว์เซอร์แล้วค่อย `POST /api/receipts/staging/register-parsed`
+ * - ค่าเริ่มต้น: อัปโหลด + OCR บนเซิร์ฟเวอร์ (เหมาะกับ localhost)
  */
 export async function POST(request: Request) {
   let tempOcrPath: string | null = null;
   let blobRollbackUrl: string | null = null;
   const blobToken = process.env.BLOB_READ_WRITE_TOKEN?.trim();
+  const mode = new URL(request.url).searchParams.get("mode");
 
   try {
     if (process.env.VERCEL && !blobToken) {
@@ -117,6 +118,28 @@ export async function POST(request: Request) {
 
     const id = randomUUID();
     const ext = extensionForMime(mimeType);
+
+    if (mode === "blob") {
+      if (!blobToken) {
+        return NextResponse.json(
+          { error: "โหมด blob ต้องตั้งค่า BLOB_READ_WRITE_TOKEN" },
+          { status: 400 },
+        );
+      }
+      const { put } = await import("@vercel/blob");
+      const key = `medical-expenses/${id}${ext}`;
+      const blob = await put(key, buf, { access: "public", token: blobToken });
+      return NextResponse.json(
+        {
+          uploadPhase: "blob",
+          blobUrl: blob.url,
+          mimeType,
+          originalFilename,
+          fileSizeBytes: buf.byteLength,
+        },
+        { status: 201 },
+      );
+    }
 
     let storedPath: string;
     let absoluteFilePath: string;

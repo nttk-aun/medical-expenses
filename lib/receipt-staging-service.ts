@@ -2,6 +2,7 @@ import { unlink, writeFile } from "fs/promises";
 import path from "path";
 import { tmpdir } from "os";
 import { Prisma } from "@prisma/client";
+import type { OcrLineBox } from "@/lib/ocr";
 import type { ParsedExpense } from "@/lib/parse-expense";
 import { parseAmountInput, parseDateInputYmd } from "@/lib/receipt-input";
 import { getPrisma } from "@/lib/prisma";
@@ -99,6 +100,93 @@ export async function createReceiptStagingWithOcr(args: {
     };
   } catch (err) {
     console.error("[createReceiptStagingWithOcr]", err);
+    throw err;
+  }
+}
+
+/** สร้าง staging จากผล OCR ที่รันในเบราว์เซอร์ (ไม่รัน Tesseract บนเซิร์ฟเวอร์) */
+export async function createReceiptStagingFromClientPayload(args: {
+  stagingId: string;
+  originalFilename: string;
+  storedPath: string;
+  mimeType: string;
+  fileSizeBytes: number;
+  ocrText: string;
+  lines: OcrLineBox[];
+}): Promise<StagingUploadResult> {
+  try {
+    const prisma = getPrisma();
+    const uuidRe =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRe.test(args.stagingId)) {
+      throw new Error("INVALID_STAGING_ID");
+    }
+    const url = args.storedPath.trim();
+    if (!url.startsWith("https://")) {
+      throw new Error("INVALID_STORED_PATH");
+    }
+
+    const { parseExpenseFromOcrText } = await import("@/lib/parse-expense");
+    const lines = Array.isArray(args.lines) ? args.lines : [];
+    let ocrError: string | null = null;
+    let parsed: ParsedExpense | null = null;
+    try {
+      parsed = parseExpenseFromOcrText(args.ocrText, lines);
+    } catch (inner) {
+      console.error("[createReceiptStagingFromClientPayload] parse", inner);
+      ocrError =
+        inner instanceof Error ? inner.message.slice(0, 4000) : String(inner).slice(0, 4000);
+    }
+
+    const ocrText = args.ocrText;
+    const parseSnapshot: Prisma.InputJsonValue = {
+      ocrPending: false,
+      clientOcr: true,
+      suggestedServiceDate: parsed?.serviceDate?.toISOString().slice(0, 10) ?? null,
+      suggestedAmountThb: parsed?.amountThb ?? null,
+      dateSource: parsed?.dateSource ?? null,
+      amountSource: parsed?.amountSource ?? null,
+      ocrPreview: ocrText ? ocrText.slice(0, 800) : null,
+    };
+
+    const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
+
+    await prisma.receiptStaging.create({
+      data: {
+        id: args.stagingId,
+        originalFilename: args.originalFilename,
+        storedPath: url,
+        mimeType: args.mimeType,
+        fileSizeBytes: args.fileSizeBytes,
+        status: "PENDING",
+        ocrText,
+        ocrError,
+        suggestedServiceDate: parsed?.serviceDate ?? undefined,
+        suggestedAmountThb:
+          parsed?.amountThb != null
+            ? new Prisma.Decimal(parsed.amountThb.toFixed(2))
+            : undefined,
+        suggestedDateSource: parsed?.dateSource ?? undefined,
+        suggestedAmountSource: parsed?.amountSource ?? undefined,
+        parseSnapshot,
+        expiresAt,
+      },
+    });
+
+    return {
+      stagingId: args.stagingId,
+      originalFilename: args.originalFilename,
+      ocrSucceeded: ocrError == null,
+      ocrError,
+      suggestedServiceDate: parsed?.serviceDate
+        ? parsed.serviceDate.toISOString().slice(0, 10)
+        : null,
+      suggestedAmountThb:
+        parsed?.amountThb != null ? parsed.amountThb.toFixed(2) : null,
+      ocrPending: false,
+    };
+  } catch (err) {
+    console.error("[createReceiptStagingFromClientPayload]", err);
     throw err;
   }
 }

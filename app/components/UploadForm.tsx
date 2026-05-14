@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useCallback, useRef, useState } from "react";
 
@@ -9,12 +8,15 @@ import {
   parseReceiptDateFieldToCeIso,
   parseReceiptDateFieldToThaiBeDisplay,
 } from "@/lib/date-thai-display";
+import { shouldUploadBlobThenClientOcr } from "@/lib/upload-client-flow";
 
 type PreviewState = {
   stagingId: string;
   originalFilename: string;
   ocrSucceeded: boolean;
   ocrError: string | null;
+  /** แสดงรูปจาก Blob URL โดยตรง (โฟลว์ client OCR บน Vercel) */
+  previewImageSrc?: string | null;
   /** วัน/เดือน/ปี พ.ศ. ตามใบ เช่น 20/05/2563 */
   serviceDateThaiBe: string;
   amountThb: string;
@@ -100,6 +102,7 @@ export function UploadForm() {
     try {
       setBusy(true);
       setMessage(null);
+      setOcrLoading(false);
       const form = e.currentTarget;
       const input = form.elements.namedItem("file") as HTMLInputElement | null;
       const file = input?.files?.[0];
@@ -107,6 +110,102 @@ export function UploadForm() {
         setMessage("กรุณาเลือกไฟล์");
         return;
       }
+
+      if (shouldUploadBlobThenClientOcr()) {
+        const fd = new FormData();
+        fd.set("file", file);
+        const up = await fetch("/api/documents/upload?mode=blob", {
+          method: "POST",
+          body: fd,
+        });
+        const blobData = (await up.json().catch(() => ({}))) as {
+          blobUrl?: string;
+          mimeType?: string;
+          originalFilename?: string;
+          fileSizeBytes?: number;
+          error?: string;
+        };
+        if (!up.ok) {
+          setMessage(blobData.error ?? "อัปโหลดรูปไม่สำเร็จ");
+          return;
+        }
+        if (!blobData.blobUrl) {
+          setMessage("ตอบกลับอัปโหลดไม่สมบูรณ์");
+          return;
+        }
+
+        setOcrLoading(true);
+        setMessage(
+          "กำลังอ่านข้อความบนเครื่องคุณ (ครั้งแรกอาจโหลดโมเดล 30–90 วินาที)…",
+        );
+
+        let text = "";
+        let lines: { text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }[] =
+          [];
+        try {
+          const { runClientOcrOnFile } = await import("@/lib/client-ocr-browser");
+          const o = await runClientOcrOnFile(file);
+          text = o.text;
+          lines = o.lines;
+        } catch (ocrErr) {
+          console.error("[UploadForm] client OCR", ocrErr);
+          setMessage(
+            "อ่านข้อความจากรูปบนเครื่องคุณไม่สำเร็จ — ลองรูปชัดขึ้น หรือใช้งานบน localhost",
+          );
+          return;
+        } finally {
+          setOcrLoading(false);
+        }
+
+        const stagingId = crypto.randomUUID();
+        const reg = await fetch("/api/receipts/staging/register-parsed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            stagingId,
+            originalFilename: file.name || blobData.originalFilename || "upload.jpg",
+            storedPath: blobData.blobUrl,
+            mimeType: blobData.mimeType ?? file.type,
+            fileSizeBytes: blobData.fileSizeBytes ?? file.size,
+            ocrText: text,
+            lines,
+          }),
+        });
+        const data = (await reg.json().catch(() => ({}))) as {
+          stagingId?: string;
+          originalFilename?: string;
+          ocrSucceeded?: boolean;
+          ocrError?: string | null;
+          suggestedServiceDate?: string | null;
+          suggestedAmountThb?: string | null;
+          error?: string;
+        };
+        if (!reg.ok) {
+          setMessage(data.error ?? "บันทึกรายการชั่วคราวไม่สำเร็จ");
+          return;
+        }
+        if (!data.stagingId) {
+          setMessage("ตอบกลับจากเซิร์ฟเวอร์ไม่สมบูรณ์");
+          return;
+        }
+
+        setPreview({
+          stagingId: data.stagingId,
+          originalFilename: data.originalFilename ?? file.name,
+          ocrSucceeded: data.ocrSucceeded !== false,
+          ocrError: data.ocrError ?? null,
+          previewImageSrc: blobData.blobUrl,
+          serviceDateThaiBe: ceIsoDateStringToThaiBeDdMmYyyy(
+            data.suggestedServiceDate ?? "",
+          ),
+          amountThb: data.suggestedAmountThb ?? "",
+          notes: "",
+        });
+        setMessage(null);
+        form.reset();
+        return;
+      }
+
       const fd = new FormData();
       fd.set("file", file);
       const res = await fetch("/api/documents/upload", {
@@ -277,13 +376,13 @@ export function UploadForm() {
           ) : null}
 
           <div className="relative aspect-[4/3] w-full max-w-sm overflow-hidden rounded-lg border border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900">
-            <Image
-              src={`/api/receipts/staging/${preview.stagingId}/image`}
+            <img
+              src={
+                preview.previewImageSrc ??
+                `/api/receipts/staging/${preview.stagingId}/image`
+              }
               alt="ตัวอย่างใบเสร็จ"
-              fill
-              className="object-contain"
-              sizes="400px"
-              unoptimized
+              className="h-full w-full object-contain"
             />
           </div>
 
@@ -416,8 +515,13 @@ export function UploadForm() {
           disabled={busy}
           className="inline-flex h-11 items-center justify-center rounded-lg bg-emerald-600 px-4 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {busy ? "กำลังอัปโหลดและ OCR…" : "อัปโหลดและอ่านข้อความ"}
+          {busy ? "กำลังอัปโหลดและอ่านข้อความ…" : "อัปโหลดและอ่านข้อความ"}
         </button>
+        {shouldUploadBlobThenClientOcr() ? (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            บน Vercel รูปจะอัปโหลดเร็ว แล้วอ่านข้อความบนเครื่องคุณ (ไม่รันบน server) — ยืนยันครั้งเดียวค่อยบันทึก DB
+          </p>
+        ) : null}
         {message ? (
           <p className="text-sm text-zinc-600 dark:text-zinc-400">{message}</p>
         ) : null}
